@@ -43,6 +43,7 @@
 #include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/Utils/Http.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
+#include "slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 #include "slic3r/Config/Version.hpp"
 #include "slic3r/Config/Snapshot.hpp"
 #include "slic3r/GUI/MarkdownTip.hpp"
@@ -859,6 +860,12 @@ bool PresetUpdater::priv::get_cached_plugins_version(std::string& cached_version
     live555_library = cache_folder.string() + "/liblive555.so";
 #endif
 
+    if (Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload("plugins")) {
+        network_library = cache_folder.string() + "/" + Slic3r::PJarczakLinuxBridge::linux_network_library_name();
+        player_library  = cache_folder.string() + "/" + Slic3r::PJarczakLinuxBridge::linux_source_library_name();
+        live555_library = cache_folder.string() + "/liblive555.so";
+    }
+
     std::string changelog_file = cache_folder.string() + "/network_plugins.json";
     if (boost::filesystem::exists(network_library)
         && boost::filesystem::exists(player_library)
@@ -953,8 +960,20 @@ void PresetUpdater::priv::sync_plugins(std::string http_url, std::string plugin_
         }
     }
 
+    // Linux plug-in bridge: ask the update endpoint for the Linux payload.
+    const std::map<std::string, std::string> previous_headers = Slic3r::Http::get_extra_headers();
+    bool plugin_headers_overridden = false;
+#if defined(__WINDOWS__) || defined(__APPLE__)
+    if (Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload("plugins")) {
+        std::map<std::string, std::string> current_headers = previous_headers;
+        current_headers["X-BBL-OS-Type"] = Slic3r::PJarczakLinuxBridge::forced_download_os_type();
+        Slic3r::Http::set_extra_headers(current_headers);
+        BOOST_LOG_TRIVIAL(info) << boost::format("set X-BBL-OS-Type to %1% for bridge plugin sync") % Slic3r::PJarczakLinuxBridge::forced_download_os_type();
+        plugin_headers_overridden = true;
+    }
+#endif
 #if defined(__WINDOWS__)
-    if (GUI::wxGetApp().is_running_on_arm64() && !GUI::wxGetApp().use_legacy_network_plugin()) {
+    if (!plugin_headers_overridden && GUI::wxGetApp().is_running_on_arm64() && !GUI::wxGetApp().use_legacy_network_plugin()) {
         //set to arm64 for plugins
         std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
         current_headers["X-BBL-OS-Type"] = "windows_arm";
@@ -973,8 +992,12 @@ void PresetUpdater::priv::sync_plugins(std::string http_url, std::string plugin_
     catch (std::exception& e) {
         BOOST_LOG_TRIVIAL(warning) << format("[Orca Updater] sync_plugins: %1%", e.what());
     }
+    if (plugin_headers_overridden) {
+        Slic3r::Http::set_extra_headers(previous_headers);
+        BOOST_LOG_TRIVIAL(info) << "restored plugin sync headers";
+    }
 #if defined(__WINDOWS__)
-    if (GUI::wxGetApp().is_running_on_arm64() && !GUI::wxGetApp().use_legacy_network_plugin()) {
+    if (!plugin_headers_overridden && GUI::wxGetApp().is_running_on_arm64() && !GUI::wxGetApp().use_legacy_network_plugin()) {
         //set back
         std::map<std::string, std::string> current_headers = Slic3r::Http::get_extra_headers();
         current_headers["X-BBL-OS-Type"] = "windows";

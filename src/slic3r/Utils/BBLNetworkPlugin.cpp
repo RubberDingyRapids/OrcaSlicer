@@ -1,5 +1,6 @@
 #include "BBLNetworkPlugin.hpp"
 #include "NetworkAgent.hpp"
+#include "PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,100 @@ namespace Slic3r {
 #define BAMBU_SOURCE_LIBRARY "BambuSource"
 
 namespace {
+
+// Linux plug-in bridge: everything the forwarder module needs next to it in the plugins folder.
+void set_bridge_preflight_reason(std::string* detail, const std::string& value)
+{
+    if (detail)
+        *detail = value;
+}
+
+bool bridge_payload_preflight(const boost::filesystem::path& plugin_folder, std::string* detail)
+{
+    const std::string common_required_files[] = {
+        Slic3r::PJarczakLinuxBridge::bridge_network_current_dir_name(),
+        Slic3r::PJarczakLinuxBridge::host_executable_file_name(),
+        "pjarczak_bambu_linux_host_abi1",
+        "pjarczak_bambu_linux_host_abi0",
+        Slic3r::PJarczakLinuxBridge::linux_network_library_name(),
+        Slic3r::PJarczakLinuxBridge::linux_source_library_name(),
+        "ca-certificates.crt",
+        "slicer_base64.cer"
+    };
+
+    for (const auto& file_name : common_required_files) {
+        const auto candidate = plugin_folder / file_name;
+        if (!boost::filesystem::exists(candidate) || boost::filesystem::is_directory(candidate)) {
+            set_bridge_preflight_reason(detail, "missing required bridge runtime file: " + file_name);
+            return false;
+        }
+    }
+
+#if defined(_MSC_VER) || defined(_WIN32)
+    const std::string platform_required_files[] = {
+        Slic3r::PJarczakLinuxBridge::windows_wsl_distro_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_import_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_validate_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_bootstrap_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_rootfs_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_plugin_cache_subdir_file_name()
+    };
+#elif defined(__WXMAC__) || defined(__APPLE__)
+    const std::string platform_required_files[] = {
+        Slic3r::PJarczakLinuxBridge::mac_host_wrapper_file_name(),
+        Slic3r::PJarczakLinuxBridge::mac_runtime_install_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::mac_runtime_verify_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::mac_lima_instance_file_name()
+    };
+#else
+    const std::string platform_required_files[] = {};
+#endif
+
+    for (const auto& file_name : platform_required_files) {
+        const auto candidate = plugin_folder / file_name;
+        if (!boost::filesystem::exists(candidate) || boost::filesystem::is_directory(candidate)) {
+            set_bridge_preflight_reason(detail, "missing required bridge runtime file: " + file_name);
+            return false;
+        }
+    }
+
+    for (const auto& file_name : {
+            Slic3r::PJarczakLinuxBridge::linux_network_library_name(),
+            Slic3r::PJarczakLinuxBridge::linux_source_library_name()}) {
+        std::string validate_reason;
+        if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file((plugin_folder / file_name).string(), &validate_reason)) {
+            set_bridge_preflight_reason(detail, file_name + ": " + validate_reason);
+            return false;
+        }
+    }
+
+    const auto manifest = plugin_folder / Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name();
+    if (boost::filesystem::exists(manifest) && !boost::filesystem::is_directory(manifest)) {
+        std::string manifest_reason;
+        if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_set_against_manifest(plugin_folder, &manifest_reason)) {
+            set_bridge_preflight_reason(detail, "linux payload manifest validation failed: " + manifest_reason);
+            return false;
+        }
+    }
+
+    set_bridge_preflight_reason(detail, "ok");
+    return true;
+}
+
+std::string list_bridge_plugin_dir_files(const boost::filesystem::path& plugin_folder)
+{
+    std::string out;
+    try {
+        for (auto& dir_entry : boost::filesystem::directory_iterator(plugin_folder)) {
+            if (!boost::filesystem::is_regular_file(dir_entry.path()))
+                continue;
+            if (!out.empty())
+                out += ", ";
+            out += dir_entry.path().filename().string();
+        }
+    } catch (...) {}
+    return out;
+}
 
 // Named in the load log: the bound generation is what ties a crash report to an ABI choice.
 // The label is the whitelist row's series, so it can never drift from the dispatch table.
@@ -80,6 +175,24 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
         plugin_folder = plugin_folder / "backup";
     }
 
+    const bool pj_bridge = Slic3r::PJarczakLinuxBridge::enabled();
+    if (pj_bridge) {
+#if defined(_MSC_VER) || defined(_WIN32)
+        _putenv_s("PJARCZAK_BAMBU_PLUGIN_DIR", plugin_folder.string().c_str());
+        _putenv_s("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", version.c_str());
+#else
+        setenv("PJARCZAK_BAMBU_PLUGIN_DIR", plugin_folder.string().c_str(), 1);
+        setenv("PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION", version.c_str(), 1);
+#endif
+        std::string preflight_reason;
+        if (!bridge_payload_preflight(plugin_folder, &preflight_reason)) {
+            BOOST_LOG_TRIVIAL(error) << "BBLNetworkPlugin::initialize: payload preflight failed: " << preflight_reason;
+            BOOST_LOG_TRIVIAL(info) << "BBLNetworkPlugin::initialize: plugin dir files: " << list_bridge_plugin_dir_files(plugin_folder);
+            set_load_error("Linux bridge payload not ready", preflight_reason, plugin_folder.string());
+            return -1;
+        }
+    }
+
     if (version.empty()) {
         BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": version is required but not provided";
         set_load_error(
@@ -126,13 +239,15 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
 #endif
     library = using_backup ? (plugin_folder / versioned_name).string()
                            : resolve_library_path(version);
+    if (pj_bridge)
+        library = Slic3r::PJarczakLinuxBridge::bridge_network_library_path(plugin_folder);
 
 #if defined(_MSC_VER) || defined(_WIN32)
-    wchar_t lib_wstr[256];
+    wchar_t lib_wstr[512];
     memset(lib_wstr, 0, sizeof(lib_wstr));
     ::MultiByteToWideChar(CP_UTF8, NULL, library.c_str(), strlen(library.c_str())+1, lib_wstr, sizeof(lib_wstr) / sizeof(lib_wstr[0]));
     m_networking_module = LoadLibrary(lib_wstr);
-    if (!m_networking_module) {
+    if (!m_networking_module && !pj_bridge) {
         std::string library_path = get_libpath_in_current_directory(std::string(BAMBU_NETWORK_LIBRARY));
         if (library_path.empty()) {
             set_load_error(
@@ -190,12 +305,23 @@ int BBLNetworkPlugin::initialize(bool using_backup, const std::string& version)
     }
 
     BOOST_LOG_TRIVIAL(info) << "BBLNetworkPlugin::initialize: abi=" << network_abi_name(m_network_abi)
+        << ", bridge_mode=" << (pj_bridge ? "true" : "false")
         << ", library=" << library
         << ", version=" << (loaded_version.empty() ? "unknown" : loaded_version)
         << ", send_message=" << (m_send_message ? "loaded" : "null")
         << ", start_print=" << (m_start_print ? "loaded" : "null")
         << ", start_local_print=" << (m_start_local_print ? "loaded" : "null")
         << ", get_my_token=" << (m_get_my_token ? "loaded" : "null");
+
+    if (pj_bridge && loaded_version.empty()) {
+        set_load_error(
+            "Linux bridge payload not ready",
+            "Bridge module loaded, but the linux payload handshake did not return a version",
+            library
+        );
+        unload();
+        return -1;
+    }
 
     return 0;
 }
@@ -210,24 +336,27 @@ int BBLNetworkPlugin::unload()
 
     UnloadFTModule();
 
+    // In bridge mode the source module is the networking module itself (see get_source_module),
+    // so it must not be released twice.
+    const bool same_handles = m_source_module && (m_source_module == m_networking_module);
 #if defined(_MSC_VER) || defined(_WIN32)
     if (m_networking_module) {
         FreeLibrary(m_networking_module);
         m_networking_module = NULL;
     }
-    if (m_source_module) {
+    if (m_source_module && !same_handles) {
         FreeLibrary(m_source_module);
-        m_source_module = NULL;
     }
+    m_source_module = NULL;
 #else
     if (m_networking_module) {
         dlclose(m_networking_module);
         m_networking_module = NULL;
     }
-    if (m_source_module) {
+    if (m_source_module && !same_handles) {
         dlclose(m_source_module);
-        m_source_module = NULL;
     }
+    m_source_module = NULL;
 #endif
 
     clear_all_function_pointers();
@@ -307,6 +436,12 @@ void* BBLNetworkPlugin::get_source_module()
 {
     if ((m_source_module) || (!m_networking_module))
         return m_source_module;
+
+    // Linux plug-in bridge: the forwarder module also carries the BambuSource entry points.
+    if (Slic3r::PJarczakLinuxBridge::enabled() && Slic3r::PJarczakLinuxBridge::source_module_is_network_module()) {
+        m_source_module = m_networking_module;
+        return m_source_module;
+    }
 
     std::string library;
     std::string data_dir_str = data_dir();

@@ -150,6 +150,8 @@
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
 #include "slic3r/Utils/BBLNetworkPlugin.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
+#include "slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
+#include "PJarczakBridgeRuntime.hpp"
 
 #include "PluginsDialog.hpp"
 #include "SpeedDialDialog.hpp"
@@ -1281,6 +1283,8 @@ int GUI_App::download_plugin(std::string name, std::string package_name, Install
 #else
     std::string os_type = "windows";
 #endif
+    if (Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name))
+        os_type = Slic3r::PJarczakLinuxBridge::forced_download_os_type();
 
     // get_url
     std::string  url = get_plugin_url(name, app_config->get_country_code());
@@ -1489,6 +1493,9 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
     mz_uint num_entries = mz_zip_reader_get_num_files(&archive);
     mz_zip_archive_file_stat stat;
     BOOST_LOG_TRIVIAL(error) << boost::format("[install_plugin]: %1%, got %2% files")%__LINE__ %num_entries;
+    // Linux plug-in bridge: only the Linux payload files (flattened) and its manifest are kept.
+    const bool pj_force_linux_payload = Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload(name);
+    const std::string pj_manifest_name = Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name();
     for (mz_uint i = 0; i < num_entries; i++) {
         if (m_networking_cancel_update || cancel) {
             BOOST_LOG_TRIVIAL(info) << boost::format("[install_plugin]: %1%, cancelled by user")%__LINE__;
@@ -1504,6 +1511,12 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
                     std::string extra(1024, 0);
                     size_t n = mz_zip_reader_get_extra(&archive, stat.m_file_index, extra.data(), extra.size());
                     dest_file = decode(extra.substr(0, n), stat.m_filename);
+                }
+                if (pj_force_linux_payload) {
+                    const std::string file_name = boost::filesystem::path(dest_file).filename().string();
+                    if (!(file_name == pj_manifest_name || Slic3r::PJarczakLinuxBridge::is_linux_payload_filename(file_name)))
+                        continue;
+                    dest_file = file_name;
                 }
                 auto dest_path = plugin_folder / dest_file;
                 boost::filesystem::create_directories(dest_path.parent_path());
@@ -1584,6 +1597,30 @@ int GUI_App::install_plugin(std::string name, std::string package_name, InstallP
     }
 
     close_zip_reader(&archive);
+
+    if (pj_force_linux_payload) {
+        for (const std::string& file_name : {
+                Slic3r::PJarczakLinuxBridge::linux_network_library_name(),
+                Slic3r::PJarczakLinuxBridge::linux_source_library_name()}) {
+            const auto candidate = plugin_folder / file_name;
+            if (!boost::filesystem::exists(candidate))
+                continue;
+            std::string validate_reason;
+            if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(candidate.string(), &validate_reason)) {
+                BOOST_LOG_TRIVIAL(error) << "[install_plugin] linux payload validation failed for " << candidate.string() << ": " << validate_reason;
+                if (pro_fn) pro_fn(InstallStatusUnzipFailed, 0, cancel);
+                return InstallStatusUnzipFailed;
+            }
+        }
+        const auto manifest_path = plugin_folder / pj_manifest_name;
+        std::string validate_reason;
+        if (boost::filesystem::exists(manifest_path) &&
+            !Slic3r::PJarczakLinuxBridge::validate_linux_payload_set_against_manifest(plugin_folder, &validate_reason)) {
+            BOOST_LOG_TRIVIAL(error) << "[install_plugin] manifest validation failed: " << validate_reason;
+            if (pro_fn) pro_fn(InstallStatusUnzipFailed, 0, cancel);
+            return InstallStatusUnzipFailed;
+        }
+    }
 
     if (name == "plugins") {
         std::string config_version = app_config->get_network_plugin_version();
@@ -3332,6 +3369,16 @@ bool GUI_App::on_init_inner()
     }
 
     copy_network_if_available();
+    if (Slic3r::PJarczakLinuxBridge::enabled()) {
+        // Linux plug-in bridge: seed the plugins folder from the installed bundle and make sure
+        // the WSL runtime is imported before the network module is loaded.
+        const boost::filesystem::path plugin_folder = boost::filesystem::path(data_dir()) / "plugins";
+        const boost::filesystem::path plugin_cache_dir = boost::filesystem::path(data_dir()) / "ota" / "plugins";
+        pjarczak_seed_plugins_folder_from_bundle(plugin_folder);
+#ifdef WIN32
+        pjarczak_verify_or_install_windows_bridge_runtime(plugin_folder, plugin_cache_dir);
+#endif
+    }
     on_init_network();
 
     if (m_agent)
@@ -3544,6 +3591,145 @@ bool GUI_App::on_init_inner()
     return true;
 }
 
+static void pjarczak_set_reason(std::string* reason, std::string value)
+{
+    if (reason)
+        *reason = std::move(value);
+}
+
+static const char* pjarczak_legacy_bootstrap_script_name()
+{
+    return "pjarczak-wsl-run-host.sh";
+}
+
+static wxString pjarczak_quote_windows_arg(const wxString& value)
+{
+    wxString escaped = value;
+    escaped.Replace("\"", "\\\"");
+    return wxString::Format("\"%s\"", escaped);
+}
+
+static long pjarczak_run_hidden_windows_command(const wxString& command, wxArrayString* stdout_lines, wxArrayString* stderr_lines)
+{
+#ifdef WIN32
+    wxArrayString local_stdout;
+    wxArrayString local_stderr;
+    long exit_code = wxExecute(command, local_stdout, local_stderr, wxEXEC_SYNC | wxEXEC_HIDE_CONSOLE);
+    if (stdout_lines)
+        *stdout_lines = local_stdout;
+    if (stderr_lines)
+        *stderr_lines = local_stderr;
+    return exit_code;
+#else
+    (void)command;
+    (void)stdout_lines;
+    (void)stderr_lines;
+    return -1;
+#endif
+}
+
+static void pjarczak_log_command_output(const char* tag, long exit_code, const wxArrayString& stdout_lines, const wxArrayString& stderr_lines)
+{
+    BOOST_LOG_TRIVIAL(info) << tag << ": exit_code=" << exit_code;
+    for (const auto& line : stdout_lines)
+        BOOST_LOG_TRIVIAL(info) << tag << " [stdout] " << into_u8(line);
+    for (const auto& line : stderr_lines)
+        BOOST_LOG_TRIVIAL(error) << tag << " [stderr] " << into_u8(line);
+}
+
+static void pjarczak_copy_runtime_file_if_exists(const boost::filesystem::path& src_dir,
+                                                 const boost::filesystem::path& dst_dir,
+                                                 const std::string& file_name)
+{
+    if (file_name.empty())
+        return;
+
+    const auto src = src_dir / file_name;
+    const auto dst = dst_dir / file_name;
+
+    if (!boost::filesystem::exists(src) || boost::filesystem::is_directory(src))
+        return;
+
+    boost::filesystem::create_directories(dst.parent_path());
+
+    std::string error_message;
+    CopyFileResult cfr = copy_file(src.string(), dst.string(), error_message, false);
+    if (cfr != CopyFileResult::SUCCESS) {
+        BOOST_LOG_TRIVIAL(error) << "[pjarczak_runtime_setup] copy runtime file failed: "
+                                 << src.string() << " -> "
+                                 << dst.string() << ", code=" << cfr
+                                 << ", err=" << error_message;
+        return;
+    }
+
+#ifndef WIN32
+    static constexpr const auto perms =
+        fs::owner_read | fs::owner_write | fs::group_read | fs::others_read |
+        fs::owner_exe | fs::group_exe | fs::others_exe;
+    try {
+        fs::permissions(dst, perms);
+    } catch (...) {}
+#endif
+}
+
+// Copies the runtime files shipped next to the executable into the plugins folder.
+static void pjarczak_copy_local_overlay_runtime(const boost::filesystem::path& plugin_folder)
+{
+    if (!Slic3r::PJarczakLinuxBridge::enabled())
+        return;
+
+    if (!boost::filesystem::exists(plugin_folder)) {
+        boost::system::error_code ec;
+        boost::filesystem::create_directories(plugin_folder, ec);
+    }
+
+    const boost::filesystem::path exe_path(into_u8(wxStandardPaths::Get().GetExecutablePath()));
+    const boost::filesystem::path exe_dir = exe_path.parent_path();
+
+    const std::string helper_files[] = {
+        Slic3r::PJarczakLinuxBridge::windows_wsl_distro_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_import_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_validate_script_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_bootstrap_script_file_name(),
+        pjarczak_legacy_bootstrap_script_name(),
+        Slic3r::PJarczakLinuxBridge::windows_wsl_rootfs_file_name(),
+        Slic3r::PJarczakLinuxBridge::windows_plugin_cache_subdir_file_name(),
+        "install_runtime.cmd",
+        "assemble_windows_runtime_bundle.ps1"
+    };
+
+    const boost::filesystem::path candidate_dirs[] = {
+        exe_dir,
+        exe_dir / "plugins"
+    };
+
+    for (const auto& candidate_dir : candidate_dirs) {
+        if (!boost::filesystem::exists(candidate_dir) || !boost::filesystem::is_directory(candidate_dir))
+            continue;
+
+        for (const std::string& file_name : helper_files)
+            pjarczak_copy_runtime_file_if_exists(candidate_dir, plugin_folder, file_name);
+
+        try {
+            for (auto& dir_entry : boost::filesystem::directory_iterator(candidate_dir)) {
+                if (!boost::filesystem::is_regular_file(dir_entry.path()))
+                    continue;
+                const std::string file_name = dir_entry.path().filename().string();
+                if (!Slic3r::PJarczakLinuxBridge::is_overlay_runtime_filename(file_name))
+                    continue;
+                pjarczak_copy_runtime_file_if_exists(candidate_dir, plugin_folder, file_name);
+            }
+        } catch (...) {}
+    }
+
+    const auto runtime_dst_dir = plugin_folder / "pjarczak_bambu_linux_host.runtime";
+    if (boost::filesystem::exists(runtime_dst_dir) && boost::filesystem::is_directory(runtime_dst_dir)) {
+        try {
+            boost::filesystem::remove_all(runtime_dst_dir);
+        } catch (...) {}
+    }
+}
+
 void GUI_App::copy_network_if_available()
 {
     if (app_config->get("update_network_plugin") != "true")
@@ -3590,6 +3776,64 @@ bool GUI_App::install_network_plugin_from_ota(bool& had_cache)
         return false;
     }
     had_cache = true;
+
+    if (Slic3r::PJarczakLinuxBridge::should_force_linux_plugin_payload("plugins")) {
+        // Linux payload: every cached file goes across as-is (the .so files validated), then the
+        // cached version is adopted and the cache dropped.
+        bool ok = true;
+        try {
+            for (auto& entry : boost::filesystem::directory_iterator(cache_folder)) {
+                if (!boost::filesystem::is_regular_file(entry.path()))
+                    continue;
+                const std::string file_name = entry.path().filename().string();
+                if (file_name == "network_plugins.json")
+                    continue;
+                std::string validate_reason;
+                if (Slic3r::PJarczakLinuxBridge::is_linux_payload_filename(file_name)) {
+                    if (!Slic3r::PJarczakLinuxBridge::validate_linux_payload_file(entry.path().string(), &validate_reason)) {
+                        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": invalid cached payload file " << file_name << ", reason=" << validate_reason;
+                        ok = false;
+                        break;
+                    }
+                } else if (entry.path().extension() == ".so" || file_name.find(".so.") != std::string::npos) {
+                    if (!Slic3r::PJarczakLinuxBridge::validate_linux_so_binary(entry.path().string(), &validate_reason)) {
+                        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": invalid cached runtime file " << file_name << ", reason=" << validate_reason;
+                        ok = false;
+                        break;
+                    }
+                }
+                std::string error_message;
+                CopyFileResult cfr = copy_file(entry.path().string(), (plugin_folder / file_name).string(), error_message, false);
+                if (cfr != CopyFileResult::SUCCESS) {
+                    BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": copying " << file_name << " failed(" << cfr << "): " << error_message;
+                    ok = false;
+                    break;
+                }
+            }
+        } catch (...) {
+            ok = false;
+        }
+        if (!ok)
+            return false;
+
+        std::string validate_reason;
+        const auto manifest = plugin_folder / Slic3r::PJarczakLinuxBridge::linux_payload_manifest_file_name();
+        if (boost::filesystem::exists(manifest) &&
+            !Slic3r::PJarczakLinuxBridge::validate_linux_payload_set_against_manifest(plugin_folder, &validate_reason)) {
+            BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": manifest validation failed after copy: " << validate_reason;
+            return false;
+        }
+
+        app_config->set_network_plugin_version(cached_version);
+        app_config->save();
+        try {
+            if (boost::filesystem::exists(cache_folder))
+                fs::remove_all(cache_folder);
+        } catch (...) {
+            BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": failed to remove the plugin cache folder " << cache_folder.string();
+        }
+        return true;
+    }
 
     std::string network_library, player_library, live555_library, network_library_dst, player_library_dst, live555_library_dst;
 #if defined(_MSC_VER) || defined(_WIN32)
@@ -3737,6 +3981,24 @@ bool GUI_App::on_init_network(bool try_backup)
                 m_user_manager = new Slic3r::UserManager();
 
             return false;
+        }
+
+        // Linux plug-in bridge: without the Linux payload and runtime in place the forwarder
+        // module cannot serve anything, so go through the download flow instead of loading it.
+        if (Slic3r::PJarczakLinuxBridge::enabled()) {
+            std::string bridge_payload_reason;
+            const boost::filesystem::path bridge_plugin_folder = boost::filesystem::path(data_dir()) / "plugins";
+            if (!pjarczak_bridge_payload_ready(bridge_plugin_folder, &bridge_payload_reason)) {
+                BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": skipping bridge module load because payload/runtime is not ready, reason=" << bridge_payload_reason;
+                m_networking_need_update = true;
+
+                if (!m_device_manager)
+                    m_device_manager = new Slic3r::DeviceManager();
+                if (!m_user_manager)
+                    m_user_manager = new Slic3r::UserManager();
+
+                return false;
+            }
         }
 
         int load_agent_dll = Slic3r::NetworkAgent::initialize_network_module(false, config_version);

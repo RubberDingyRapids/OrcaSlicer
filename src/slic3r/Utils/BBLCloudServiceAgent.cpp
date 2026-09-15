@@ -1,5 +1,6 @@
 #include "BBLCloudServiceAgent.hpp"
 #include "BBLNetworkPlugin.hpp"
+#include "PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 #include <boost/log/trivial.hpp>
 #include "Http.hpp"
@@ -58,6 +59,10 @@ std::map<std::string, std::string> BBLCloudServiceAgent::get_extra_header()
     extra_headers.emplace("X-BBL-Client-Name", "BambuStudio");
 
     extra_headers.emplace("X-BBL-Client-Version", GUI::wxGetApp().get_bbl_client_version());
+#if defined(__WINDOWS__) || defined(__APPLE__)
+    if (Slic3r::PJarczakLinuxBridge::enabled())
+        extra_headers.emplace("X-BBL-OS-Type", Slic3r::PJarczakLinuxBridge::forced_download_os_type());
+#endif
 #if defined(__WINDOWS__)
 #ifdef _M_X64
     extra_headers.emplace("X-BBL-OS-Type", "windows");

@@ -6,7 +6,19 @@
 #include <map>
 #include <vector>
 
+// The standalone Linux bridge host and the forwarder DLL compile this header without the
+// libslic3r include tree; they only need the legacy version constant from AppConfig.hpp.
+#if defined(PJARCZAK_LINUX_BRIDGE_STANDALONE_HOST) || defined(PJARCZAK_LINUX_BRIDGE_LIGHTWEIGHT_TASKS)
+#ifndef BAMBU_NETWORK_AGENT_VERSION_LEGACY
+#if defined(_WIN32) || defined(_WIN64)
+#define BAMBU_NETWORK_AGENT_VERSION_LEGACY "01.10.01.09"
+#else
+#define BAMBU_NETWORK_AGENT_VERSION_LEGACY "01.10.01.01"
+#endif
+#endif
+#else
 #include "libslic3r/AppConfig.hpp"
+#endif
 extern std::string g_log_folder;
 extern std::string g_log_start_time;
 

@@ -169,6 +169,44 @@ if (NOT WIN32 AND NOT APPLE)
 endif ()
 
 target_link_libraries(OrcaSlicer libslic3r cereal::cereal)
+
+set(PJARCZAK_WINDOWS_RUNTIME_SUPPORT_FILES "")
+set(PJARCZAK_OPTIONAL_WINDOWS_RUNTIME_FILES "")
+if (WIN32)
+    foreach(_runtime_support_file
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/pjarczak_wsl_distro.txt"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/install_runtime.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/install_runtime.cmd"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/verify_runtime.ps1"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/verify_runtime.cmd"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/pjarczak_wsl_run_host.sh"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/wsl/pjarczak_plugin_cache_subdir.txt"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/release/assemble_windows_runtime_bundle.ps1")
+        if (EXISTS "${_runtime_support_file}")
+            file(TO_CMAKE_PATH "${_runtime_support_file}" _runtime_support_file_cmake)
+            list(APPEND PJARCZAK_WINDOWS_RUNTIME_SUPPORT_FILES "${_runtime_support_file_cmake}")
+        endif()
+    endforeach()
+
+    foreach(_runtime_file
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/pjarczak_bambu_linux_host"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/pjarczak_bambu_linux_host_abi1"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/pjarczak_bambu_linux_host_abi0"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/libbambu_networking.so"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/libBambuSource.so"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/linux_payload_manifest.json"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/libcrypto.so.3"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/libz.so.1"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_linux_host/runtime/linux-x86_64/libzstd.so.1"
+        "${CMAKE_SOURCE_DIR}/tools/pjarczak_bambu_runtime/rootfs/windows-wsl2-rootfs.tar"
+        "${CMAKE_SOURCE_DIR}/resources/cert/ca-certificates.crt"
+        "${CMAKE_SOURCE_DIR}/resources/cert/slicer_base64.cer")
+        if (EXISTS "${_runtime_file}")
+            file(TO_CMAKE_PATH "${_runtime_file}" _runtime_file_cmake)
+            list(APPEND PJARCZAK_OPTIONAL_WINDOWS_RUNTIME_FILES "${_runtime_file_cmake}")
+        endif()
+    endforeach()
+endif()
 # target_include_directories(OrcaSlicer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/slic3r)
 if (APPLE)
 #    add_compile_options(-stdlib=libc++)
@@ -390,6 +428,12 @@ if (WIN32)
     if (MSVC)
         install(TARGETS OrcaSlicer_app_gui RUNTIME DESTINATION ".")
     endif ()
+    if (PJARCZAK_WINDOWS_RUNTIME_SUPPORT_FILES)
+        install(FILES ${PJARCZAK_WINDOWS_RUNTIME_SUPPORT_FILES} DESTINATION ".")
+    endif()
+    if (PJARCZAK_OPTIONAL_WINDOWS_RUNTIME_FILES)
+        install(FILES ${PJARCZAK_OPTIONAL_WINDOWS_RUNTIME_FILES} DESTINATION ".")
+    endif()
     install(FILES ${output_dlls_${build_type}} DESTINATION ".")
     install(DIRECTORY "${CMAKE_PREFIX_PATH}/libpython/" DESTINATION "python")
 else ()

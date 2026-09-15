@@ -6,6 +6,7 @@
 #include "QidiPrinterAgent.hpp"
 #include "SnapmakerPrinterAgent.hpp"
 #include "MoonrakerPrinterAgent.hpp"
+#include "PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 #include "slic3r/plugin/PluginManager.hpp"
 #include "slic3r/plugin/pluginTypes/printerAgent/PrinterAgentPluginCapability.hpp"
 #include "CrealityPrintAgent.hpp"
@@ -222,6 +223,19 @@ std::unique_ptr<NetworkAgent> create_agent_from_config(const std::string& log_di
                 BOOST_LOG_TRIVIAL(info) << "Initialized third-party cloud agent: " << provider;
             }
         }
+
+#if defined(_MSC_VER) || defined(_WIN32) || defined(__APPLE__)
+        // Linux plug-in bridge: the BBL cloud agent is what the bridged plug-in serves, so make
+        // sure it exists once the plug-in is installed even if the provider list lacks it.
+        if (Slic3r::PJarczakLinuxBridge::enabled() && app_config->get_bool("installed_networking") &&
+            !agent->get_cloud_agent(BBL_CLOUD_PROVIDER)) {
+            auto bbl_agent = NetworkAgentFactory::create_cloud_agent(BBL_CLOUD_PROVIDER, log_dir);
+            if (bbl_agent) {
+                agent->add_cloud_agent(BBL_CLOUD_PROVIDER, std::move(bbl_agent));
+                BOOST_LOG_TRIVIAL(info) << "Linux bridge enabled - added BBL cloud agent";
+            }
+        }
+#endif
     }
 
     return agent;

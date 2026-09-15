@@ -156,6 +156,9 @@ if "%USE_NINJA%"=="1" (
 if "%1"=="deps" goto :done
 
 :slicer
+call :check_linux_bridge_runtime_inputs
+if errorlevel 1 exit /b 1
+
 echo "building Orca Slicer..."
 cd %WP%
 mkdir %build_dir%
@@ -175,6 +178,9 @@ cd ..
 call scripts/run_gettext.bat
 cd %build_dir%
 cmake --build . --target install --config %build_type%
+if errorlevel 1 exit /b 1
+call :copy_linux_bridge_runtime
+if errorlevel 1 exit /b 1
 
 :done
 @echo off
@@ -188,3 +194,74 @@ set /a "_mins=_remainder / 60"
 set /a "_secs=_remainder - _mins * 60"
 echo.
 echo Build completed in %_hours%h %_mins%m %_secs%s
+exit /b 0
+
+:resolve_rootfs_tar
+if defined PJARCZAK_ROOTFS_TAR exit /b 0
+if defined PJARCZAK_WSL_ROOTFS_TAR (
+    if exist "%PJARCZAK_WSL_ROOTFS_TAR%" (
+        set "PJARCZAK_ROOTFS_TAR=%PJARCZAK_WSL_ROOTFS_TAR%"
+        exit /b 0
+    )
+    echo Missing file from PJARCZAK_WSL_ROOTFS_TAR: %PJARCZAK_WSL_ROOTFS_TAR%
+    exit /b 1
+)
+if exist "%WP%\tools\pjarczak_bambu_runtime\rootfs\windows-wsl2-rootfs.tar" (
+    set "PJARCZAK_ROOTFS_TAR=%WP%\tools\pjarczak_bambu_runtime\rootfs\windows-wsl2-rootfs.tar"
+    exit /b 0
+)
+if exist "%WP%\tools\pjarczak_bambu_runtime\windows-wsl2-rootfs.tar" (
+    set "PJARCZAK_ROOTFS_TAR=%WP%\tools\pjarczak_bambu_runtime\windows-wsl2-rootfs.tar"
+    exit /b 0
+)
+echo Missing windows-wsl2-rootfs.tar under tools\pjarczak_bambu_runtime (or set PJARCZAK_WSL_ROOTFS_TAR).
+exit /b 1
+
+:check_linux_bridge_runtime_inputs
+set "HOST_RUNTIME_DIR=%WP%\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64"
+call :resolve_rootfs_tar
+if errorlevel 1 exit /b 1
+for %%f in (pjarczak_bambu_linux_host pjarczak_bambu_linux_host_abi1 pjarczak_bambu_linux_host_abi0 ca-certificates.crt slicer_base64.cer) do (
+    if not exist "%HOST_RUNTIME_DIR%\%%f" (
+        echo Missing host runtime file: %HOST_RUNTIME_DIR%\%%f
+        exit /b 1
+    )
+)
+echo Host runtime preflight OK: %HOST_RUNTIME_DIR% / %PJARCZAK_ROOTFS_TAR%
+exit /b 0
+
+:copy_linux_bridge_runtime
+set "INSTALL_DIR=%WP%\%build_dir%\OrcaSlicer"
+set "HOST_RUNTIME_DIR=%WP%\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64"
+if not defined PJARCZAK_ROOTFS_TAR (
+    call :resolve_rootfs_tar
+    if errorlevel 1 exit /b 1
+)
+if not exist "%INSTALL_DIR%" (
+    echo Missing install directory: %INSTALL_DIR%
+    exit /b 1
+)
+if not exist "%INSTALL_DIR%\pjarczak_bambu_networking_bridge.dll" (
+    if exist "%WP%\%build_dir%\src\%build_type%\pjarczak_bambu_networking_bridge.dll" copy /Y "%WP%\%build_dir%\src\%build_type%\pjarczak_bambu_networking_bridge.dll" "%INSTALL_DIR%\pjarczak_bambu_networking_bridge.dll" >nul
+)
+if not exist "%INSTALL_DIR%\pjarczak_bambu_networking_bridge.dll" (
+    if exist "%WP%\%build_dir%\pjarczak_bambu_networking_bridge.dll" copy /Y "%WP%\%build_dir%\pjarczak_bambu_networking_bridge.dll" "%INSTALL_DIR%\pjarczak_bambu_networking_bridge.dll" >nul
+)
+if not exist "%INSTALL_DIR%\pjarczak_bambu_networking_bridge.dll" (
+    echo Missing bridge DLL in install output: %INSTALL_DIR%\pjarczak_bambu_networking_bridge.dll
+    exit /b 1
+)
+xcopy "%HOST_RUNTIME_DIR%\*" "%INSTALL_DIR%\\" /I /Y >nul
+if errorlevel 4 (
+    echo Failed to copy host runtime files into %INSTALL_DIR%
+    exit /b 1
+)
+copy /Y "%PJARCZAK_ROOTFS_TAR%" "%INSTALL_DIR%\windows-wsl2-rootfs.tar" >nul
+if errorlevel 1 exit /b 1
+for %%f in (pjarczak_wsl_run_host.sh install_runtime.ps1 install_runtime.cmd verify_runtime.ps1 verify_runtime.cmd pjarczak_wsl_distro.txt pjarczak_plugin_cache_subdir.txt) do (
+    copy /Y "%WP%\tools\pjarczak_bambu_runtime\wsl\%%f" "%INSTALL_DIR%\%%f" >nul
+    if errorlevel 1 exit /b 1
+)
+copy /Y "%WP%\tools\pjarczak_bambu_runtime\release\assemble_windows_runtime_bundle.ps1" "%INSTALL_DIR%\assemble_windows_runtime_bundle.ps1" >nul
+if errorlevel 1 exit /b 1
+exit /b 0

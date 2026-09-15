@@ -1,4 +1,5 @@
 #include "Http.hpp"
+#include "PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 
 #include <cstdlib>
 #include <functional>

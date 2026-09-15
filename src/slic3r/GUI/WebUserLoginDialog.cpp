@@ -6,6 +6,8 @@
 #include "slic3r/GUI/wxExtensions.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/Utils/NetworkAgent.hpp"
+#include "slic3r/Utils/Http.hpp"
+#include "slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
 #include "libslic3r_version.h"
 
 #include <wx/sizer.h>
@@ -142,6 +144,23 @@ ZUserLogin::ZUserLogin(std::shared_ptr<ICloudServiceAgent> cloud_agent)
         Layout();
         Fit();
         CentreOnParent();
+    } else if (m_cloud_agent->get_id() == BBL_CLOUD_PROVIDER && Slic3r::PJarczakLinuxBridge::enabled()) {
+        // Linux plug-in bridge: sign in through the system browser; the ticket comes back on
+        // the loopback server (HttpServer ticket flow) and this dialog is closed from there.
+        m_external_browser_mode = true;
+        m_browser = nullptr;
+        SetTitle(_L("Login"));
+        wxBoxSizer* m_sizer_main = new wxBoxSizer(wxVERTICAL);
+        auto* m_message = new wxStaticText(this, wxID_ANY,
+                                           _L("Login opens in your default browser. Finish sign-in there and this dialog will close automatically."),
+                                           wxDefaultPosition, wxDefaultSize, 0);
+        m_message->SetForegroundColour(*wxBLACK);
+        m_message->Wrap(FromDIP(420));
+        m_sizer_main->Add(m_message, 0, wxALL | wxEXPAND, FromDIP(16));
+        SetSizer(m_sizer_main);
+        m_sizer_main->SetSizeHints(this);
+        SetSize(FromDIP(wxSize(460, 140)));
+        CentreOnParent();
     } else {
         // Get the login URL from the injected cloud service agent
         wxString strlang = wxGetApp().current_language_code_safe();
@@ -201,7 +220,28 @@ void ZUserLogin::OnTimer(wxTimerEvent &event) {
 
 bool ZUserLogin::run() {
     m_timer = new wxTimer(this, NETWORK_OFFLINE_TIMER_ID);
-    m_timer->Start(8000);
+    m_timer->Start(m_external_browser_mode ? 30000 : 8000);
+
+    if (m_external_browser_mode && m_cloud_agent) {
+        wxString strlang = wxGetApp().current_language_code_safe();
+        strlang.Replace("_", "-");
+        const int         port      = ensure_loopback_port();
+        const std::string localhost = std::string(LOCALHOST_URL) + std::to_string(port);
+        std::string       host      = m_cloud_agent->get_cloud_service_host();
+        while (!host.empty() && host.back() == '/')
+            host.pop_back();
+        if (host.rfind("http://", 0) != 0 && host.rfind("https://", 0) != 0)
+            host = "https://bambulab.com";
+        const std::string lang     = strlang.empty() ? std::string("en") : strlang.ToStdString();
+        const std::string callback = host + "/sign-in/callback?source=portal&locale=" + Http::url_encode(lang) +
+                                     "&redirect_url=" + Http::url_encode(localhost) +
+                                     "&openBy=suite&from=studio&slicerLoginType=ticket";
+        const std::string browser_url = host + "/sign-in?&from=studio&source=portal&to=" + Http::url_encode(callback);
+        BOOST_LOG_TRIVIAL(info) << "external login url = " << browser_url;
+        const bool browser_opened = wxLaunchDefaultBrowser(wxString::FromUTF8(browser_url), wxBROWSER_NEW_WINDOW);
+        BOOST_LOG_TRIVIAL(info) << "external login browser_opened=" << (browser_opened ? 1 : 0);
+        m_networkOk = true;
+    }
 
     if (this->ShowModal() == wxID_OK) {
         return true;
