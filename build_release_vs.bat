@@ -219,6 +219,11 @@ exit /b 1
 
 :check_linux_bridge_runtime_inputs
 set "HOST_RUNTIME_DIR=%WP%\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64"
+if not exist "%HOST_RUNTIME_DIR%\pjarczak_bambu_linux_host" (
+    echo No Linux host runtime under %HOST_RUNTIME_DIR% - building without the bundled runtime
+    set "PJARCZAK_RUNTIME_SKIP=1"
+    exit /b 0
+)
 call :resolve_rootfs_tar
 if errorlevel 1 exit /b 1
 for %%f in (pjarczak_bambu_linux_host pjarczak_bambu_linux_host_abi1 pjarczak_bambu_linux_host_abi0 ca-certificates.crt slicer_base64.cer) do (
@@ -231,6 +236,7 @@ echo Host runtime preflight OK: %HOST_RUNTIME_DIR% / %PJARCZAK_ROOTFS_TAR%
 exit /b 0
 
 :copy_linux_bridge_runtime
+if defined PJARCZAK_RUNTIME_SKIP exit /b 0
 set "INSTALL_DIR=%WP%\%build_dir%\OrcaSlicer"
 set "HOST_RUNTIME_DIR=%WP%\tools\pjarczak_bambu_linux_host\runtime\linux-x86_64"
 if not defined PJARCZAK_ROOTFS_TAR (
