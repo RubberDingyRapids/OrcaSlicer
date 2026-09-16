@@ -77,8 +77,10 @@ void pjarczak_verify_or_install_windows_bridge_runtime(const boost::filesystem::
 
     const wxString plugin_dir_wx = from_u8(plugin_folder.string());
     const wxString cache_dir_wx  = from_u8(plugin_cache_dir.string());
+    // cmd.exe /c needs the whole command line wrapped in one extra pair of quotes when the
+    // program path and the arguments are themselves quoted.
     const wxString verify_cmd    = wxString::Format(
-        "cmd.exe /c %s -PackageDir %s -PluginCacheDir %s -AllowMissingLinuxPlugin",
+        "cmd.exe /c \"%s -PackageDir %s -PluginCacheDir %s -AllowMissingLinuxPlugin\"",
         quote_windows_arg(from_u8(verify_cmd_file.string())),
         quote_windows_arg(plugin_dir_wx),
         quote_windows_arg(cache_dir_wx));
@@ -91,7 +93,7 @@ void pjarczak_verify_or_install_windows_bridge_runtime(const boost::filesystem::
         return;
 
     const wxString install_cmd = wxString::Format(
-        "cmd.exe /c %s -PackageDir %s -PluginDir %s -PluginCacheDir %s",
+        "cmd.exe /c \"%s -PackageDir %s -PluginDir %s -PluginCacheDir %s\"",
         quote_windows_arg(from_u8(install_cmd_file.string())),
         quote_windows_arg(plugin_dir_wx),
         quote_windows_arg(plugin_dir_wx),
