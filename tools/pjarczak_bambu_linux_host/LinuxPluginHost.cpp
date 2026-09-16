@@ -719,7 +719,7 @@ void LinuxPluginHost::set_callback_reply(std::int64_t request_id, const std::str
 
 nlohmann::json LinuxPluginHost::handle(const std::string& method, const nlohmann::json& payload)
 {
-    using namespace BBL;
+    using namespace Slic3r;
 
     clear_thread_reply_binary();
 
