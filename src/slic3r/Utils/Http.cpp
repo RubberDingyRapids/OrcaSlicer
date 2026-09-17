@@ -190,6 +190,8 @@ Http::priv::priv(const std::string &url)
     set_timeout_max(DEFAULT_TIMEOUT_MAX);
 	::curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, log_trace);
 	::curl_easy_setopt(curl, CURLOPT_URL, url.c_str());   // curl makes a copy internally
+	// Tried presenting the plug-in's client string here in bridge mode; the cloud then refused
+	// every call ("Please login"), so the slicer keeps its own User-Agent.
 	::curl_easy_setopt(curl, CURLOPT_USERAGENT, SLIC3R_APP_NAME "/" SoftFever_VERSION);
 	::curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, &error_buffer.front());
 #ifdef __WINDOWS__

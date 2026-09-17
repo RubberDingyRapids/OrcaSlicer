@@ -76,6 +76,17 @@ struct BridgeAgent {
 struct BridgeJobState {
     std::int64_t job_id{0};
     std::string kind;
+    // The callbacks below belong to the caller (a print or publish job in the slicer) and are
+    // valid only until that plug-in call returns. A late event - one queued to the main thread,
+    // or one the host sends after the call finished - must never reach them, so
+    // unregister_job_state() sets `finished` and drops them, and every dispatch copies the
+    // callback under `cb_mutex` before calling it.
+    std::mutex cb_mutex;
+    bool finished{false};
+    // Callbacks the event pump is executing right now. The caller's lambdas capture its stack by
+    // reference, so unregister_job_state() waits for this to drain before the plug-in call
+    // returns and that stack goes away.
+    std::atomic<int> in_flight{0};
     BBL::OnUpdateStatusFn on_update_status;
     BBL::WasCancelledFn was_cancelled;
     BBL::OnWaitFn on_wait;

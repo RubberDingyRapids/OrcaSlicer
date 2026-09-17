@@ -14,6 +14,12 @@ bool should_force_linux_plugin_payload(const std::string& plugin_name);
 const char* forced_download_os_type();
 const char* forced_client_version();
 
+// The plug-in authenticates its ordinary API calls but sends its print/upload
+// requests (/user/project, /user/notification) with no usable credential. Stash the
+// session token here so the extra-header block can carry it on every request.
+void set_session_token(const std::string& token);
+std::string session_token();
+
 std::string bridge_network_module_stem();
 std::string bridge_network_current_dir_name();
 std::string bridge_network_library_path(const std::filesystem::path& plugin_folder);

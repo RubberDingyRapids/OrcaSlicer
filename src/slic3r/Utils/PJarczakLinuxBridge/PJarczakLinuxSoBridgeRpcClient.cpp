@@ -1,6 +1,12 @@
 #include "PJarczakLinuxSoBridgeRpcClient.hpp"
 #include "PJarczakLinuxSoBridgeLauncher.hpp"
 #include "PJarczakLinuxSoBridgeRpcProtocol.hpp"
+#include <boost/filesystem.hpp>
+#include <fstream>
+#include <chrono>
+#include <boost/log/trivial.hpp>
+#include <mutex>
+#include <cstdlib>
 
 #include <boost/process/environment.hpp>
 #if defined(_WIN32)
@@ -65,12 +71,37 @@ bool RpcClient::start_locked()
             return false;
         }
 
+        // The host writes its own diagnostics ([PJBRIDGE] lines: what the plug-in
+        // reported back from change_user, login_info, logged_in, user_id) to stderr.
+        // Leaving stderr unredirected in a windowed build throws all of that away,
+        // so send it to a file next to the app's own logs.
+        boost::filesystem::path host_err_log;
+        try {
+            const char* appdata = std::getenv("APPDATA");
+            if (appdata != nullptr) {
+                boost::filesystem::path dir = boost::filesystem::path(appdata) / "OrcaSlicer" / "log";
+                boost::system::error_code ec;
+                boost::filesystem::create_directories(dir, ec);
+                host_err_log = dir / "pjarczak_host_stderr.log";
+            }
+        } catch (...) {
+        }
+
         auto proc = std::make_unique<Proc>();
 #if defined(_WIN32)
-        proc->child = bp::child(spec.argv[0], bp::args(args), bp::std_in < proc->in, bp::std_out > proc->out,
-                                bp::windows::create_no_window, bp::windows::hide, env);
+        if (!host_err_log.empty())
+            proc->child = bp::child(spec.argv[0], bp::args(args), bp::std_in < proc->in, bp::std_out > proc->out,
+                                    bp::std_err > host_err_log.string(),
+                                    bp::windows::create_no_window, bp::windows::hide, env);
+        else
+            proc->child = bp::child(spec.argv[0], bp::args(args), bp::std_in < proc->in, bp::std_out > proc->out,
+                                    bp::windows::create_no_window, bp::windows::hide, env);
 #else
-        proc->child = bp::child(spec.argv[0], bp::args(args), bp::std_in < proc->in, bp::std_out > proc->out, env);
+        if (!host_err_log.empty())
+            proc->child = bp::child(spec.argv[0], bp::args(args), bp::std_in < proc->in, bp::std_out > proc->out,
+                                    bp::std_err > host_err_log.string(), env);
+        else
+            proc->child = bp::child(spec.argv[0], bp::args(args), bp::std_in < proc->in, bp::std_out > proc->out, env);
 #endif
         m_proc = std::move(proc);
         m_reader_stop.store(false, std::memory_order_release);
@@ -272,6 +303,67 @@ void RpcClient::reader_loop()
     }
 }
 
+namespace {
+// Trace every call the slicer makes into the plug-in. The host only logs a handful
+// of methods and its 401s come from inside closed-source code, so the call sequence
+// and return values on this side are the only view we have of what the print path
+// actually asks for and what comes back.
+void rpc_trace(const std::string& method, const nlohmann::json& reply)
+{
+    // Off unless asked for: this is a debugging aid and the replies carry live
+    // credentials. Set PJARCZAK_RPC_TRACE=1 to record the call sequence.
+    static const bool enabled = std::getenv("PJARCZAK_RPC_TRACE") != nullptr;
+    if (!enabled)
+        return;
+
+    static std::mutex    trace_mutex;
+    static std::ofstream trace_file;
+    static bool          tried_open = false;
+    std::lock_guard<std::mutex> lock(trace_mutex);
+    if (!tried_open) {
+        tried_open = true;
+        const char* appdata = std::getenv("APPDATA");
+        if (appdata != nullptr) {
+            boost::filesystem::path dir = boost::filesystem::path(appdata) / "OrcaSlicer" / "log";
+            boost::system::error_code ec;
+            boost::filesystem::create_directories(dir, ec);
+            trace_file.open((dir / "pjarczak_rpc_trace.log").string(), std::ios::app);
+        }
+    }
+    if (!trace_file.is_open())
+        return;
+
+    std::string dump;
+    try {
+        dump = reply.dump();
+    } catch (...) {
+        dump = "<undumpable>";
+    }
+
+    // Never write credentials to disk. change_user replies embed the login payload as an
+    // escaped JSON string, so a token shows up as \"token\":\"... as well as "token":"...
+    for (const char* key : {"Authorization", "token", "refresh_token", "accessToken", "refreshToken"}) {
+        for (const bool escaped : {false, true}) {
+            const std::string q      = escaped ? "\\\"" : "\"";
+            const std::string needle = q + key + q + ":" + q;
+            std::size_t       pos    = 0;
+            while ((pos = dump.find(needle, pos)) != std::string::npos) {
+                const std::size_t vstart = pos + needle.size();
+                const std::size_t vend   = dump.find(q, vstart);
+                if (vend == std::string::npos)
+                    break;
+                dump.replace(vstart, vend - vstart, "<redacted>");
+                pos = vstart + 10;
+            }
+        }
+    }
+
+    if (dump.size() > 400)
+        dump = dump.substr(0, 400) + "...";
+    trace_file << method << " -> " << dump << std::endl;
+}
+} // namespace
+
 RpcBinaryReply RpcClient::request_impl(const std::string& method, const nlohmann::json& payload, const std::vector<unsigned char>& request_binary, bool skip_handshake)
 {
     if (!skip_handshake && !ensure_started())
@@ -312,8 +404,34 @@ RpcBinaryReply RpcClient::request_impl(const std::string& method, const nlohmann
         return {make_error_payload(m_last_error), {}};
     }
 
+    // Media calls get a deadline; everything else keeps waiting indefinitely. A stalled
+    // src.* call used to hang its caller forever - Bambu_ReadSample runs in a loop on the
+    // media thread and Bambu_Open blocks while connecting, so one stall froze the UI for
+    // good. Print calls must stay unbounded: an upload legitimately takes minutes.
+    std::chrono::milliseconds timeout{0};
+    if (method.rfind("src.", 0) == 0)
+        timeout = std::chrono::milliseconds(method == "src.open" || method == "src.start_stream" ||
+                                            method == "src.start_stream_ex" ? 20000 : 8000);
+
     std::unique_lock<std::mutex> plock(pending->mutex);
-    pending->cv.wait(plock, [&] { return pending->ready; });
+    if (timeout.count() > 0) {
+        if (!pending->cv.wait_for(plock, timeout, [&] { return pending->ready; })) {
+            plock.unlock();
+            {
+                // Drop the pending entry so a late reply is discarded rather than landing
+                // on an object the caller has moved on from.
+                std::lock_guard<std::mutex> lock(m_state_mutex);
+                m_pending.erase(id);
+                m_last_error = method + " timed out";
+            }
+            BOOST_LOG_TRIVIAL(warning) << "pjarczak bridge: " << method << " timed out after "
+                                       << timeout.count() << "ms";
+            return {make_error_payload(method + " timed out"), {}};
+        }
+    } else {
+        pending->cv.wait(plock, [&] { return pending->ready; });
+    }
+    rpc_trace(method, pending->payload);
     return {pending->payload, pending->binary};
 }
 

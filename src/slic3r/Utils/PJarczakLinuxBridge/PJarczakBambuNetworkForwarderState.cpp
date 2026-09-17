@@ -1,7 +1,9 @@
 #include "PJarczakBambuNetworkForwarderState.hpp"
 #include "PJarczakLinuxSoBridgeRpcClient.hpp"
 
+#include <chrono>
 #include <functional>
+#include <thread>
 #if defined(_WIN32)
 #include <codecvt>
 #include <locale>
@@ -207,30 +209,62 @@ void dispatch_agent_event(std::int64_t remote_handle, const std::string& name, c
     }
     if (name == "job.update_status") {
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
-        if (job && job->on_update_status) {
+        if (job) {
             const int status = payload.value("status", 0);
             const int code = payload.value("code", 0);
             const auto msg = payload.value("msg", std::string());
-            run_or_queue(agent, [job, status, code, msg] { job->on_update_status(status, code, msg); });
+            // Re-checked inside the task: by the time the main thread runs it, the plug-in call
+            // may have returned and the caller's callback died with it.
+            run_or_queue(agent, [job, status, code, msg] {
+                BBL::OnUpdateStatusFn fn;
+                {
+                    std::lock_guard<std::mutex> lk(job->cb_mutex);
+                    if (!job->finished)
+                        fn = job->on_update_status;
+                }
+                if (fn)
+                    fn(status, code, msg);
+            });
         }
         return;
     }
     if (name == "job.progress") {
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
-        if (job && job->on_progress) {
+        if (job) {
             const int progress = payload.value("progress", 0);
-            run_or_queue(agent, [job, progress] { job->on_progress(progress); });
+            run_or_queue(agent, [job, progress] {
+                BBL::ProgressFn fn;
+                {
+                    std::lock_guard<std::mutex> lk(job->cb_mutex);
+                    if (!job->finished)
+                        fn = job->on_progress;
+                }
+                if (fn)
+                    fn(progress);
+            });
         }
         return;
     }
     if (name == "job.check") {
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
         bool reply = true;
-        if (job && job->on_check && payload.contains("info") && payload["info"].is_object()) {
-            std::map<std::string, std::string> info;
-            for (auto it = payload["info"].begin(); it != payload["info"].end(); ++it)
-                info[it.key()] = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
-            reply = job->on_check(info);
+        if (job && payload.contains("info") && payload["info"].is_object()) {
+            BBL::CheckFn fn;
+            {
+                std::lock_guard<std::mutex> lk(job->cb_mutex);
+                if (!job->finished) {
+                    fn = job->on_check;
+                    if (fn)
+                        job->in_flight.fetch_add(1);
+                }
+            }
+            if (fn) {
+                std::map<std::string, std::string> info;
+                for (auto it = payload["info"].begin(); it != payload["info"].end(); ++it)
+                    info[it.key()] = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+                reply = fn(info);
+                job->in_flight.fetch_sub(1);
+            }
         }
         RpcClient::instance().invoke_void("bridge.job_wait_reply", {{"job_id", payload.value("job_id", 0LL)}, {"request_id", payload.value("request_id", 0LL)}, {"reply", reply}});
         return;
@@ -238,18 +272,34 @@ void dispatch_agent_event(std::int64_t remote_handle, const std::string& name, c
     if (name == "job.wait") {
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
         bool reply = true;
-        if (job && job->on_wait) {
-            const int status = payload.value("status", 0);
-            const auto info = payload.value("job_info", std::string());
-            reply = job->on_wait(status, info);
+        if (job) {
+            BBL::OnWaitFn fn;
+            {
+                std::lock_guard<std::mutex> lk(job->cb_mutex);
+                if (!job->finished) {
+                    fn = job->on_wait;
+                    if (fn)
+                        job->in_flight.fetch_add(1);
+                }
+            }
+            if (fn) {
+                const int status = payload.value("status", 0);
+                const auto info = payload.value("job_info", std::string());
+                reply = fn(status, info);
+                job->in_flight.fetch_sub(1);
+            }
         }
         RpcClient::instance().invoke_void("bridge.job_wait_reply", {{"job_id", payload.value("job_id", 0LL)}, {"request_id", payload.value("request_id", 0LL)}, {"reply", reply}});
         return;
     }
     if (name == "job.complete") {
         auto job = find_job_state(agent, payload.value("job_id", 0LL));
-        if (job && job->out_string && payload.contains("out"))
-            *job->out_string = payload.value("out", std::string());
+        if (job && payload.contains("out")) {
+            // out_string points at the caller's stack, so only write while the call is live.
+            std::lock_guard<std::mutex> lk(job->cb_mutex);
+            if (!job->finished && job->out_string)
+                *job->out_string = payload.value("out", std::string());
+        }
         return;
     }
 }
@@ -307,6 +357,23 @@ void unregister_job_state(BridgeAgent* agent, std::int64_t job_id)
         job->stop_cancel_watch = true;
         if (job->cancel_watch.joinable())
             job->cancel_watch.join();
+        // The caller's callbacks die with this call - drop them so a late event cannot reach
+        // freed state, and drop the out_string, which points at the caller's stack.
+        {
+            std::lock_guard<std::mutex> cb_lock(job->cb_mutex);
+            job->finished = true;
+        }
+        // A callback already running on the event pump still holds references into the caller's
+        // stack frame, which disappears as soon as this call returns - wait for it to finish.
+        for (int spin = 0; job->in_flight.load() > 0 && spin < 20000; ++spin)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        std::lock_guard<std::mutex> cb_lock(job->cb_mutex);
+        job->on_update_status = nullptr;
+        job->was_cancelled    = nullptr;
+        job->on_wait          = nullptr;
+        job->on_progress      = nullptr;
+        job->on_check         = nullptr;
+        job->out_string       = nullptr;
     }
 }
 

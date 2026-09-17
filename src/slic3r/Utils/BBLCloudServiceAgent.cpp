@@ -6,6 +6,7 @@
 #include "Http.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 
+#include <cstdlib>
 #include <sstream>
 #include <boost/algorithm/string/replace.hpp>
 #include <nlohmann/json.hpp>
@@ -89,6 +90,17 @@ std::map<std::string, std::string> BBLCloudServiceAgent::get_extra_header()
 
     extra_headers.emplace("X-BBL-Language",
                           convert_studio_language_to_api(app.current_language_code_safe().ToStdString()));
+
+    // The Linux plug-in sets its own Authorization header on its ordinary API calls, so
+    // injecting one here duplicates it and Cloudflare rejects the request with 400. Its
+    // print/upload calls (/user/project, /user/notification) carry no credential, but
+    // extra headers are global so we cannot target only those. Off by default; set
+    // PJARCZAK_INJECT_AUTH_HEADER=1 only to re-test that path.
+    if (Slic3r::PJarczakLinuxBridge::enabled() && std::getenv("PJARCZAK_INJECT_AUTH_HEADER") != nullptr) {
+        const std::string token = Slic3r::PJarczakLinuxBridge::session_token();
+        if (!token.empty())
+            extra_headers.emplace("Authorization", "Bearer " + token);
+    }
     return extra_headers;
 }
 
@@ -167,7 +179,12 @@ int BBLCloudServiceAgent::change_user(std::string user_info)
     auto agent = plugin.get_agent();
     auto func = plugin.get_change_user();
     if (func && agent) {
-        return func(agent, user_info);
+        const int ret = func(agent, user_info);
+        // A session token now exists, so re-push the extra headers: they are applied by
+        // the plug-in to every request, which is how the print/upload calls get a
+        // credential they otherwise never attach.
+        set_extra_http_header();
+        return ret;
     }
     return -1;
 }
@@ -334,8 +351,11 @@ int BBLCloudServiceAgent::connect_server()
     auto agent = plugin.get_agent();
     auto func = plugin.get_connect_server();
     if (func && agent) {
-        return func(agent);
+        const int ret = func(agent);
+        BOOST_LOG_TRIVIAL(info) << "bbl cloud: connect_server -> " << ret;
+        return ret;
     }
+    BOOST_LOG_TRIVIAL(warning) << "bbl cloud: connect_server skipped (func=" << (void*) func << ", agent=" << agent << ")";
     return -1;
 }
 
@@ -367,7 +387,10 @@ int BBLCloudServiceAgent::start_subscribe(std::string module)
     auto agent = plugin.get_agent();
     auto func = plugin.get_start_subscribe();
     if (func && agent) {
-        return func(agent, module);
+        const int ret = func(agent, module);
+        BOOST_LOG_TRIVIAL(info) << "bbl cloud: start_subscribe(" << module << ") -> " << ret
+                                << ", server_connected=" << is_server_connected();
+        return ret;
     }
     return -1;
 }

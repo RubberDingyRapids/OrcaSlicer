@@ -19,6 +19,11 @@
 #include <wx/file.h>
 #include <wx/wfstream.h>
 
+#ifdef WIN32
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 #include <boost/cast.hpp>
 #include <boost/asio.hpp>
 #include <boost/algorithm/string/replace.hpp>
@@ -144,7 +149,11 @@ ZUserLogin::ZUserLogin(std::shared_ptr<ICloudServiceAgent> cloud_agent)
         Layout();
         Fit();
         CentreOnParent();
-    } else if (m_cloud_agent->get_id() == BBL_CLOUD_PROVIDER && Slic3r::PJarczakLinuxBridge::enabled()) {
+    // The browser sign-in returns a portal-scoped ticket token, which the cloud stops honouring
+    // within minutes ("Please login"). The built-in web view login returns the session the
+    // slicer needs, so it is the default; set PJARCZAK_BROWSER_LOGIN=1 to force the browser.
+    } else if (m_cloud_agent->get_id() == BBL_CLOUD_PROVIDER && Slic3r::PJarczakLinuxBridge::enabled() &&
+               getenv("PJARCZAK_BROWSER_LOGIN") != nullptr) {
         // Linux plug-in bridge: sign in through the system browser; the ticket comes back on
         // the loopback server (HttpServer ticket flow) and this dialog is closed from there.
         m_external_browser_mode = true;
@@ -161,6 +170,9 @@ ZUserLogin::ZUserLogin(std::shared_ptr<ICloudServiceAgent> cloud_agent)
         m_sizer_main->SetSizeHints(this);
         SetSize(FromDIP(wxSize(460, 140)));
         CentreOnParent();
+        // ShowUserLogin() calls ShowModal() straight after this constructor, so open the browser
+        // from the event loop rather than from run(), which nothing calls.
+        CallAfter([this] { launch_external_login_browser(); });
     } else {
         // Get the login URL from the injected cloud service agent
         wxString strlang = wxGetApp().current_language_code_safe();
@@ -218,14 +230,25 @@ void ZUserLogin::OnTimer(wxTimerEvent &event) {
     }
 }
 
-bool ZUserLogin::run() {
-    m_timer = new wxTimer(this, NETWORK_OFFLINE_TIMER_ID);
-    m_timer->Start(m_external_browser_mode ? 30000 : 8000);
+// Opens the Bambu sign-in page in the system browser. The page sends its ticket to the
+// loopback server this dialog started, which finishes the login and closes the dialog.
+// Called from the constructor (via CallAfter), because ShowUserLogin() shows the dialog with
+// ShowModal() directly and never goes through run().
+void ZUserLogin::launch_external_login_browser()
+{
+    if (!m_external_browser_mode || !m_cloud_agent || m_browser_launched)
+        return;
+    m_browser_launched = true;
 
-    if (m_external_browser_mode && m_cloud_agent) {
-        wxString strlang = wxGetApp().current_language_code_safe();
-        strlang.Replace("_", "-");
-        const int         port      = ensure_loopback_port();
+    wxString strlang = wxGetApp().current_language_code_safe();
+    strlang.Replace("_", "-");
+    const int port = ensure_loopback_port();
+
+    // The plug-in's own sign-in URL is a plain page meant for the built-in web view, which picks
+    // the token up over a JS bridge - in a real browser it just signs the user into the website.
+    // So build the callback URL that redirects the ticket back to the loopback server here.
+    std::string browser_url;
+    {
         const std::string localhost = std::string(LOCALHOST_URL) + std::to_string(port);
         std::string       host      = m_cloud_agent->get_cloud_service_host();
         while (!host.empty() && host.back() == '/')
@@ -236,12 +259,29 @@ bool ZUserLogin::run() {
         const std::string callback = host + "/sign-in/callback?source=portal&locale=" + Http::url_encode(lang) +
                                      "&redirect_url=" + Http::url_encode(localhost) +
                                      "&openBy=suite&from=studio&slicerLoginType=ticket";
-        const std::string browser_url = host + "/sign-in?&from=studio&source=portal&to=" + Http::url_encode(callback);
-        BOOST_LOG_TRIVIAL(info) << "external login url = " << browser_url;
-        const bool browser_opened = wxLaunchDefaultBrowser(wxString::FromUTF8(browser_url), wxBROWSER_NEW_WINDOW);
-        BOOST_LOG_TRIVIAL(info) << "external login browser_opened=" << (browser_opened ? 1 : 0);
-        m_networkOk = true;
+        browser_url = host + "/sign-in?&from=studio&source=portal&to=" + Http::url_encode(callback);
     }
+    BOOST_LOG_TRIVIAL(info) << "external login url = " << browser_url;
+
+    const wxString browser_url_wx = wxString::FromUTF8(browser_url);
+    bool browser_opened = wxLaunchDefaultBrowser(browser_url_wx, wxBROWSER_NEW_WINDOW);
+#ifdef WIN32
+    if (!browser_opened) {
+        HINSTANCE rc = ::ShellExecuteW(nullptr, L"open", browser_url_wx.wc_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        browser_opened = ((INT_PTR) rc > 32);
+    }
+    if (!browser_opened)
+        browser_opened = wxExecute(wxString::Format("explorer.exe \"%s\"", browser_url_wx), wxEXEC_ASYNC | wxEXEC_HIDE_CONSOLE) != 0;
+#endif
+    BOOST_LOG_TRIVIAL(info) << "external login browser_opened=" << (browser_opened ? 1 : 0);
+    m_networkOk = true;
+}
+
+bool ZUserLogin::run() {
+    m_timer = new wxTimer(this, NETWORK_OFFLINE_TIMER_ID);
+    m_timer->Start(m_external_browser_mode ? 30000 : 8000);
+
+    launch_external_login_browser();
 
     if (this->ShowModal() == wxID_OK) {
         return true;

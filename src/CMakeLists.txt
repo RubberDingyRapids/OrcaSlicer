@@ -170,6 +170,12 @@ endif ()
 
 target_link_libraries(OrcaSlicer libslic3r cereal::cereal)
 
+# A link map turns a crash address (module + RVA from the Windows error report) into a function
+# name without a debugger - the PDB is too large for dbghelp to load.
+if (MSVC)
+    target_link_options(OrcaSlicer PRIVATE "/MAP")
+endif()
+
 set(PJARCZAK_WINDOWS_RUNTIME_SUPPORT_FILES "")
 set(PJARCZAK_OPTIONAL_WINDOWS_RUNTIME_FILES "")
 if (WIN32)

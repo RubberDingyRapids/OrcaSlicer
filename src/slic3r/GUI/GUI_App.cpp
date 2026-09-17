@@ -2679,6 +2679,15 @@ void GUI_App::copy_older_config()
 
 std::string GUI_App::get_bbl_client_version()
 {
+    // The bridge runs Bambu's Linux plug-in, and that plug-in's upload pipeline needs a
+    // real session token. The newer ticket login mints a 144-char opaque grant which the
+    // cloud accepts for ordinary API calls (get_user_print_info returns 200) but which
+    // leaves /user/project and /user/notification unauthenticated - their 401 bodies are
+    // byte-identical to sending no Authorization header at all. Pinning the legacy client
+    // version keeps Bambu on the older ?access_token= redirect, which returns a proper
+    // session token. Set PJARCZAK_MODERN_LOGIN=1 to go back to the ticket flow.
+    if (Slic3r::PJarczakLinuxBridge::enabled() && std::getenv("PJARCZAK_MODERN_LOGIN") == nullptr)
+        return "01.10.01.50";
     if (BBLNetworkPlugin::instance().get_get_my_token() == nullptr) {
         return "01.10.01.50";
     }
@@ -5672,6 +5681,8 @@ void GUI_App::request_remove_project(std::string project_id)
 
 void GUI_App::handle_http_error(unsigned int status, std::string body, const std::string& provider)
 {
+    BOOST_LOG_TRIVIAL(warning) << "http error from cloud: provider=" << provider << ", status=" << status
+                               << ", body=" << body.substr(0, 400);
     // tips body size must less than 1024
     auto evt = new wxCommandEvent(EVT_HTTP_ERROR);
     evt->SetInt(status);

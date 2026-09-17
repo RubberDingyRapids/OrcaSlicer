@@ -7,6 +7,8 @@
 #include "DeviceManager.hpp"
 #include "DeviceCore/DevConfigUtil.h"
 #include "slic3r/Utils/NetworkAgent.hpp"
+#include "slic3r/Utils/PJarczakLinuxBridge/PJarczakLinuxBridgeConfig.hpp"
+#include <cstdlib>
 #include "libslic3r/Thread.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "I18N.hpp"
@@ -277,6 +279,17 @@ void MediaPlayCtrl::Play()
     }
     if (!m_camera_exists) {
         Stop(_L("Printer camera is malfunctioning."));
+        return;
+    }
+    // Live view is off under the bridge, but not because of the bridge: this Orca only
+    // speaks TUTK and Agora (see LiveviewRemote), while an H2S reports
+    // ipcam.brtc_service=enable with tutk and agora both disabled - a protocol nothing
+    // here implements. The local RTSP path needs LAN mode, which defeats the point of
+    // this build. Attempting it anyway just drops the machine selection.
+    // Set PJARCZAK_LIVE_VIEW=1 to try regardless (e.g. on a printer that offers TUTK).
+    if (Slic3r::PJarczakLinuxBridge::enabled() && std::getenv("PJARCZAK_LIVE_VIEW") == nullptr) {
+        Stop(_L("Live view is unavailable in this build."));
+        m_failed_retry = 0;
         return;
     }
 

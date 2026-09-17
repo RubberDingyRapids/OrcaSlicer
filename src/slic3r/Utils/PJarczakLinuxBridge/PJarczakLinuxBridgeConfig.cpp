@@ -1,4 +1,5 @@
 #include "PJarczakLinuxBridgeConfig.hpp"
+#include <mutex>
 
 #include <array>
 #include <cstdint>
@@ -151,7 +152,10 @@ const char* forced_download_os_type()
 
 const char* forced_client_version()
 {
-    return "02.05.02.51";
+    // Must match the plug-in series the bridge actually runs (02.08.01) so the client version,
+    // the User-Agent and the plug-in all describe the same client. A mismatch is accepted by
+    // some cloud endpoints and refused by others.
+    return "02.08.01.55";
 }
 
 std::string bridge_network_module_stem()
@@ -497,3 +501,24 @@ std::vector<std::string> ota_copy_extensions()
 }
 
 }
+
+namespace Slic3r::PJarczakLinuxBridge {
+
+namespace {
+std::mutex  g_session_token_mutex;
+std::string g_session_token;
+} // namespace
+
+void set_session_token(const std::string& token)
+{
+    std::lock_guard<std::mutex> lock(g_session_token_mutex);
+    g_session_token = token;
+}
+
+std::string session_token()
+{
+    std::lock_guard<std::mutex> lock(g_session_token_mutex);
+    return g_session_token;
+}
+
+} // namespace Slic3r::PJarczakLinuxBridge

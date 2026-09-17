@@ -491,7 +491,7 @@ void PrintJob::process(Ctl &ctl)
     auto wait_fn = [&ctl, &obj](int state, std::string job_info) {
             BOOST_LOG_TRIVIAL(info) << "print_job: get_job_info = " << job_info;
 
-            if (!obj->is_support_wait_sending_finish) {
+            if (!obj || !obj->is_support_wait_sending_finish) {
                 return true;
             }
 

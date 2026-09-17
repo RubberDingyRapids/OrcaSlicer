@@ -75,6 +75,8 @@ private:
     std::string m_AutotestToken;
     int m_loopback_port { 0 };
     bool m_external_browser_mode { false };
+    bool m_browser_launched { false };
+    void launch_external_login_browser();
 
 #if wxUSE_WEBVIEW_IE
     wxMenuItem *m_script_object_el;
