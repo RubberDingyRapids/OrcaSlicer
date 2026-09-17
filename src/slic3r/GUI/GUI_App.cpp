@@ -5955,6 +5955,13 @@ void GUI_App::check_track_enable()
     }
 }
 
+void GUI_App::defer_401_logout()
+{
+    // Reuse the existing grace window rather than adding a second mechanism: a 401 within
+    // 30s of this point is logged but does not trigger request_user_logout().
+    m_last_401_error_time = std::chrono::steady_clock::now();
+}
+
 void GUI_App::on_user_login(wxCommandEvent &evt)
 {
     if (!m_agent) { return; }

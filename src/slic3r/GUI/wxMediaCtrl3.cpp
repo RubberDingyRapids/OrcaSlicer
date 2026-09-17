@@ -40,6 +40,14 @@ wxMediaCtrl3::~wxMediaCtrl3()
         m_frame = wxImage(m_idle_image);
         m_cond.notify_all();
     }
+    // Clearing m_url only wakes the play thread if it is waiting on the condition
+    // variable. While a stream is being negotiated it sits inside BambuSource
+    // (Bambu_StartStream / Bambu_ReadSample), which is native and blocking, so it never
+    // reaches the m_url check and join() would hang the UI thread for good - the app
+    // freezes the moment this control is destroyed mid-negotiation. Closing the tunnel
+    // makes that call return so the thread can unwind.
+    if (void* tunnel = m_active_tunnel.exchange(nullptr, std::memory_order_acq_rel))
+        Bambu_Close(tunnel);
     m_thread.join();
 }
 
@@ -201,6 +209,7 @@ void wxMediaCtrl3::PlayThread()
         Bambu_Tunnel tunnel = nullptr;
         int error = Bambu_Create(&tunnel, m_url->BuildURI().ToUTF8());
         if (error == 0) {
+            m_active_tunnel.store(tunnel, std::memory_order_release);
             Bambu_SetLogger(tunnel, &wxMediaCtrl3::bambu_log, this);
             error = Bambu_Open(tunnel);
             if (error == 0)
@@ -289,7 +298,10 @@ void wxMediaCtrl3::PlayThread()
         }
         if (tunnel) {
             lk.unlock();
-            Bambu_Close(tunnel);
+            // The destructor may already have closed this to unblock us; whoever wins the
+            // exchange performs the close, so it happens exactly once.
+            if (void* t = m_active_tunnel.exchange(nullptr, std::memory_order_acq_rel))
+                Bambu_Close(t);
             Bambu_Destroy(tunnel);
             tunnel = nullptr;
             lk.lock();

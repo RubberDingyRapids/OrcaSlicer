@@ -577,6 +577,11 @@ public:
     bool            check_privacy_update();
     void            check_privacy_version(int online_login = 0, const std::string& provider = ORCA_CLOUD_PROVIDER);
     void            check_track_enable();
+    // A failed secondary request (e.g. the camera URL) must not destroy the session:
+    // handle_http_error logs the user out on a 401, and request_user_logout() calls
+    // clean_user_info(), which wipes userMachineList and the selection - the printer
+    // visibly disappears. Callers about to make such a request defer that logout.
+    void            defer_401_logout();
 
     static bool     catch_error(std::function<void()> cb, const std::string& err);
 

@@ -8,6 +8,7 @@
 #ifndef wxMediaCtrl3_h
 #define wxMediaCtrl3_h
 
+#include <atomic>
 #include <chrono>
 #include "wx/window.h"
 #include "wx/bitmap.h"
@@ -82,6 +83,11 @@ private:
     std::chrono::system_clock::time_point m_last_PTS_practical;
     std::mutex m_mutex;
     std::condition_variable m_cond;
+    // The play thread can be parked inside a blocking BambuSource call (Bambu_StartStream
+    // or Bambu_ReadSample) where it cannot observe m_url changing, so the destructor closes
+    // the live tunnel to make that call return before joining. Without this, destroying the
+    // control mid-negotiation deadlocks the UI thread permanently.
+    std::atomic<void*> m_active_tunnel{nullptr};
     std::thread m_thread;
 };
 

@@ -643,6 +643,67 @@ int BBLCloudServiceAgent::get_camera_url(std::string dev_id, std::function<void(
     auto agent = plugin.get_agent();
     auto func = plugin.get_get_camera_url();
     if (func && agent) {
+        // This endpoint answers 401 "Please login." under the bridge even with a healthy
+        // session, and that 401 reaches handle_http_error and logs the user out, wiping the
+        // device list. Defer that logout so a camera failure degrades quietly.
+        GUI::wxGetApp().defer_401_logout();
+        // Re-push the identity headers first: doing exactly this after change_user is what
+        // made /user/project authenticate, so give this request the same treatment.
+        set_extra_http_header();
+        // The plug-in's own camera request answers 401 even with a healthy session and
+        // freshly pushed headers. Our own HTTP authenticates fine against this API (proved
+        // against /user/project), so find out whether we can fetch the TUTK credentials
+        // ourselves and build the bambu:///tutk URL without the plug-in. Logs field names
+        // and sizes only - never the credentials themselves.
+        {
+            // dev_id arrives as "<machine>|<dev_ver>|<protocols>"
+            std::string machine = dev_id, dev_ver;
+            const auto bar = dev_id.find('|');
+            if (bar != std::string::npos) {
+                machine = dev_id.substr(0, bar);
+                const auto bar2 = dev_id.find('|', bar + 1);
+                dev_ver = dev_id.substr(bar + 1, bar2 == std::string::npos ? std::string::npos : bar2 - bar - 1);
+            }
+            const std::string token = Slic3r::PJarczakLinuxBridge::session_token();
+            BOOST_LOG_TRIVIAL(info) << "camprobe: machine=" << machine << " dev_ver=" << dev_ver
+                                    << " token_len=" << token.size();
+            if (!token.empty()) {
+                auto probe = [&token, this](const char* label, const char* url, bool post, const std::string& body) {
+                    std::string  rb;
+                    unsigned int st = 0;
+                    auto req = post ? Http::post(url) : Http::get(url);
+                    req.header("Authorization", "Bearer " + token)
+                       .header("Content-Type", "application/json")
+                       .header("Accept", "application/json");
+                    // The plug-in stamps these on every request; the camera endpoint is likely
+                    // refusing a caller that does not identify itself.
+                    for (const auto& kv : get_extra_header())
+                        req.header(kv.first, kv.second);
+                    if (post)
+                        req.set_post_body(body);
+                    req.on_complete([&rb, &st](std::string b, unsigned s) { rb = std::move(b); st = s; })
+                       .on_error([&rb, &st](std::string b, std::string e, unsigned s) { rb = b + " err=" + e; st = s; })
+                       .perform_sync();
+                    std::string summary;
+                    try {
+                        auto j = nlohmann::json::parse(rb);
+                        for (auto it = j.begin(); it != j.end(); ++it) {
+                            if (!summary.empty()) summary += ", ";
+                            summary += it.key() + "(" + (it.value().is_string()
+                                ? std::to_string(it.value().get<std::string>().size()) + " chars"
+                                : it.value().dump().substr(0, 20)) + ")";
+                        }
+                    } catch (...) { summary = rb.substr(0, 120); }
+                    BOOST_LOG_TRIVIAL(info) << "camprobe[" << label << "] status=" << st << " fields: " << summary;
+                };
+                nlohmann::json b1;
+                b1["dev_id"]  = machine;
+                b1["dev_ver"] = dev_ver;
+                probe("ttcode_post", "https://api.bambulab.com/v1/iot-service/api/user/ttcode", true, b1.dump());
+                probe("ttcode_get",
+                      ("https://api.bambulab.com/v1/iot-service/api/user/ttcode?dev_id=" + machine).c_str(), false, "");
+            }
+        }
         return func(agent, dev_id, callback);
     }
     return -1;

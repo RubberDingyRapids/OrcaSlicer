@@ -665,19 +665,44 @@ namespace Slic3r
 
     MachineObject* DeviceManager::get_selected_machine()
     {
-        if (selected_machine.empty()) return nullptr;
+        // Returning nullptr here makes the printer visibly disappear (MonitorPanel shows
+        // MONITOR_NO_PRINTER and MediaPlayCtrl drops its URL, aborting any live view).
+        // Log which branch caused it, once per change, so a transient cause is visible.
+        auto note = [](const std::string& reason) {
+            static std::string last;
+            if (reason == last)
+                return;
+            last = reason;
+            BOOST_LOG_TRIVIAL(warning) << "get_selected_machine: " << reason;
+        };
 
-        MachineObject* obj = get_user_machine(selected_machine, GUI::wxGetApp().get_printer_cloud_provider());
-        if (obj)
+        if (selected_machine.empty()) {
+            note("nullptr - selected_machine is empty");
+            return nullptr;
+        }
+
+        const std::string provider = GUI::wxGetApp().get_printer_cloud_provider();
+        MachineObject* obj = get_user_machine(selected_machine, provider);
+        if (obj) {
+            note("ok");
             return obj;
+        }
 
-        // return local machine has access code
         auto it = localMachineList.find(selected_machine);
         if (it != localMachineList.end())
         {
-            if (it->second->has_access_right())
+            if (it->second->has_access_right()) {
+                note("ok - local machine");
                 return it->second;
+            }
         }
+        // Only ask here: is_user_login() is a blocking RPC under the bridge and this
+        // function runs on every UI refresh, so do not pay for it on the happy path.
+        const bool logged_in = m_agent && m_agent->is_user_login(provider);
+        note(std::string("nullptr - logged_in=") + (logged_in ? "1" : "0") +
+             " userMachineList=" + std::to_string(userMachineList.size()) +
+             " localMachineList=" + std::to_string(localMachineList.size()) +
+             " selected=" + selected_machine);
         return nullptr;
     }
 
