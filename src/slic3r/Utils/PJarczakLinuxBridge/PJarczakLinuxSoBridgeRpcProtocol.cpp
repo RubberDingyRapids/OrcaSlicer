@@ -89,7 +89,19 @@ bool read_raw_frame(std::istream& in, RawRpcFrame& frame, std::string& error)
 
 bool write_json_frame(std::ostream& out, RpcFrameType type, int id, const nlohmann::json& payload)
 {
-    const auto dumped = payload.dump();
+    // Printer data relayed through here is not guaranteed to be valid UTF-8, and a plain
+    // dump() throws type_error.316 on a stray byte. Nothing caught that, so the Linux host
+    // terminated mid-session: every later RPC then returned an error payload, is_user_login()
+    // fell back to false, and the printer vanished from the UI. Substitute U+FFFD for bad
+    // sequences instead - losing a character beats losing the process.
+    std::string dumped;
+    try {
+        dumped = payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    } catch (const std::exception& e) {
+        // Anything still unserialisable becomes an error frame rather than taking us down.
+        nlohmann::json fallback{{"ok", false}, {"error", std::string("payload not serialisable: ") + e.what()}};
+        dumped = fallback.dump();
+    }
     return write_raw_frame(out, type, id, dumped.data(), dumped.size());
 }
 

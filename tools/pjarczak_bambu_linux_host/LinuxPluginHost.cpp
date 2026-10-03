@@ -104,7 +104,7 @@ void host_log_json(const std::string& kind, const nlohmann::json& payload)
         line["kind"] = kind;
         line["payload"] = payload;
         std::lock_guard<std::mutex> lock(g_host_log_mutex);
-        std::cerr << "[PJBRIDGE] " << trim_for_log(line.dump()) << std::endl;
+        std::cerr << "[PJBRIDGE] " << trim_for_log(line.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)) << std::endl;
     } catch (...) {
     }
 }
@@ -221,7 +221,7 @@ std::map<std::string, std::string> json_to_string_map(const nlohmann::json& j)
         if (it.value().is_string())
             out[it.key()] = it.value().get<std::string>();
         else
-            out[it.key()] = it.value().dump();
+            out[it.key()] = it.value().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     }
     return out;
 }

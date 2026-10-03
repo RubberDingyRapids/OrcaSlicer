@@ -97,16 +97,39 @@ int main(int argc, char** argv)
         }
 
         std::thread([&host, &rpc_out, &out_mutex, req_id = req.id, req_method = req.method, req_payload = req.payload, request_binary = std::move(request_binary)]() mutable {
-            LinuxPluginHost::set_thread_request_binary(std::move(request_binary));
-            nlohmann::json resp = host.handle(req_method, req_payload);
+            // This thread is detached, so an escaping exception calls std::terminate and takes
+            // the whole host down - which is exactly what happened: a type_error.316 from
+            // serialising non-UTF-8 printer data killed the process mid-session, and every RPC
+            // afterwards failed, making the printer disappear from the slicer. Report the
+            // failure to the caller instead of dying.
+            try {
+                LinuxPluginHost::set_thread_request_binary(std::move(request_binary));
+                nlohmann::json resp = host.handle(req_method, req_payload);
 
-            std::vector<unsigned char> reply_binary;
-            const bool has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
+                std::vector<unsigned char> reply_binary;
+                const bool has_reply_binary = LinuxPluginHost::consume_thread_reply_binary(reply_binary);
 
-            std::lock_guard<std::mutex> lock(out_mutex);
-            write_json_frame(rpc_out, RpcFrameType::json_response, req_id, resp);
-            if (has_reply_binary)
-                write_raw_frame(rpc_out, RpcFrameType::binary_data, req_id, reply_binary.data(), reply_binary.size());
+                std::lock_guard<std::mutex> lock(out_mutex);
+                write_json_frame(rpc_out, RpcFrameType::json_response, req_id, resp);
+                if (has_reply_binary)
+                    write_raw_frame(rpc_out, RpcFrameType::binary_data, req_id, reply_binary.data(), reply_binary.size());
+            } catch (const std::exception& e) {
+                std::cerr << "[PJBRIDGE] dispatch threw for " << req_method << ": " << e.what() << std::endl;
+                try {
+                    std::lock_guard<std::mutex> lock(out_mutex);
+                    write_json_frame(rpc_out, RpcFrameType::json_response, req_id,
+                                     nlohmann::json{{"ok", false}, {"error", e.what()}});
+                } catch (...) {
+                }
+            } catch (...) {
+                std::cerr << "[PJBRIDGE] dispatch threw unknown for " << req_method << std::endl;
+                try {
+                    std::lock_guard<std::mutex> lock(out_mutex);
+                    write_json_frame(rpc_out, RpcFrameType::json_response, req_id,
+                                     nlohmann::json{{"ok", false}, {"error", "unknown exception"}});
+                } catch (...) {
+                }
+            }
         }).detach();
     }
 

@@ -46,9 +46,15 @@ wxMediaCtrl3::~wxMediaCtrl3()
     // reaches the m_url check and join() would hang the UI thread for good - the app
     // freezes the moment this control is destroyed mid-negotiation. Closing the tunnel
     // makes that call return so the thread can unwind.
-    if (void* tunnel = m_active_tunnel.exchange(nullptr, std::memory_order_acq_rel))
+    BOOST_LOG_TRIVIAL(info) << "~wxMediaCtrl3: signalled, closing tunnel";
+    if (void* tunnel = m_active_tunnel.exchange(nullptr, std::memory_order_acq_rel)) {
+        BOOST_LOG_TRIVIAL(info) << "~wxMediaCtrl3: Bambu_Close entering";
         Bambu_Close(tunnel);
+        BOOST_LOG_TRIVIAL(info) << "~wxMediaCtrl3: Bambu_Close returned";
+    }
+    BOOST_LOG_TRIVIAL(info) << "~wxMediaCtrl3: joining play thread";
     m_thread.join();
+    BOOST_LOG_TRIVIAL(info) << "~wxMediaCtrl3: joined";
 }
 
 void wxMediaCtrl3::Load(wxURI url)
@@ -208,27 +214,64 @@ void wxMediaCtrl3::PlayThread()
         lk.unlock();
         Bambu_Tunnel tunnel = nullptr;
         int error = Bambu_Create(&tunnel, m_url->BuildURI().ToUTF8());
+        BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: Bambu_Create -> " << error;
         if (error == 0) {
             m_active_tunnel.store(tunnel, std::memory_order_release);
             Bambu_SetLogger(tunnel, &wxMediaCtrl3::bambu_log, this);
             error = Bambu_Open(tunnel);
+            BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: Bambu_Open -> " << error;
             if (error == 0)
                 error = Bambu_would_block;
         }
         lk.lock();
+        // Log what StartStream actually returns. It has never been recorded, so whether it
+        // blocks indefinitely or keeps answering would_block is unknown - and the two have
+        // completely different fixes. Log the first few and then sparsely, to stay readable.
+        int start_tries = 0;
         while (error == int(Bambu_would_block)) {
             m_cond.wait_for(lk, 100ms);
             if (m_url != url) {
+                BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: url changed after " << start_tries
+                                        << " StartStream tries, abandoning";
                 error = 1;
                 break;
             }
             lk.unlock();
+            BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: StartStream try " << (start_tries + 1) << " entering";
             error = Bambu_StartStream(tunnel, true);
+            ++start_tries;
+            if (start_tries <= 5 || start_tries % 20 == 0)
+                BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: Bambu_StartStream try " << start_tries
+                                        << " -> " << error;
             lk.lock();
         }
+        BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: StartStream loop done after " << start_tries
+                                << " tries, error=" << error;
         Bambu_StreamInfo info;
-        if (error == 0)
-            error = Bambu_GetStreamInfo(tunnel, 0, &info);
+        if (error == 0) {
+            // StartStream needed ten attempts before it reported success, so the stream's
+            // metadata is very likely not ready the instant it does. A single GetStreamInfo
+            // here returned -1 and sent the thread down the failure path. Poll briefly, the
+            // same way the start above does, and log the stream count so a wrong index is
+            // distinguishable from metadata simply not being ready yet.
+            const int stream_count = Bambu_GetStreamCount(tunnel);
+            BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: Bambu_GetStreamCount -> " << stream_count;
+            int info_tries = 0;
+            while (true) {
+                error = Bambu_GetStreamInfo(tunnel, 0, &info);
+                ++info_tries;
+                BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: Bambu_GetStreamInfo try " << info_tries
+                                        << " -> " << error;
+                if (error == 0 || info_tries >= 30)
+                    break;
+                m_cond.wait_for(lk, 100ms);
+                if (m_url != url) {
+                    BOOST_LOG_TRIVIAL(info) << "wxMediaCtrl3: url changed while waiting for stream info";
+                    error = 1;
+                    break;
+                }
+            }
+        }
         AVVideoDecoder decoder;
         int minFrameDuration = 0;
         if (error == 0) {
