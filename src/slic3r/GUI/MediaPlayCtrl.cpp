@@ -281,13 +281,15 @@ void MediaPlayCtrl::Play()
         Stop(_L("Printer camera is malfunctioning."));
         return;
     }
-    // Live view is off under the bridge, but not because of the bridge: this Orca only
-    // speaks TUTK and Agora (see LiveviewRemote), while an H2S reports
-    // ipcam.brtc_service=enable with tutk and agora both disabled - a protocol nothing
-    // here implements. The local RTSP path needs LAN mode, which defeats the point of
-    // this build. Attempting it anyway just drops the machine selection.
-    // Set PJARCZAK_LIVE_VIEW=1 to try regardless (e.g. on a printer that offers TUTK).
-    if (Slic3r::PJarczakLinuxBridge::enabled() && std::getenv("PJARCZAK_LIVE_VIEW") == nullptr) {
+    // Live view works under the bridge: the media functions come from the forwarder module
+    // (see BBLNetworkPlugin::get_source_module - in bridge mode the source module *is* the
+    // networking module), so Bambu_Create and friends are forwarded over RPC to the Linux
+    // libBambuSource. No Windows BambuSource.dll is involved or needed.
+    //
+    // It was disabled while the Linux host was being killed mid-session by an unhandled JSON
+    // exception (see write_json_frame), which looked like a video bug but was not.
+    // Set PJARCZAK_NO_LIVE_VIEW=1 to turn it back off.
+    if (Slic3r::PJarczakLinuxBridge::enabled() && std::getenv("PJARCZAK_NO_LIVE_VIEW") != nullptr) {
         Stop(_L("Live view is unavailable in this build."));
         m_failed_retry = 0;
         return;
