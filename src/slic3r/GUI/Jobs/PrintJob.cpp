@@ -540,6 +540,28 @@ void PrintJob::process(Ctl &ctl)
             return true;
     };
 
+    // A LAN send opens with cloud bookkeeping (project id, upload grant) before any file is
+    // transferred, and those calls 401 transiently while a session settles - there is a log
+    // where this path failed that way and the cloud path then succeeded seconds later on the
+    // very same session. Retry once rather than abandoning the much faster local transfer.
+    //
+    // Only pre-transfer failures are retried. Retrying after the FTP upload or the task post
+    // could transfer twice or queue a second job, and a post-task failure must still be
+    // reported: the printer would not actually be printing.
+    auto send_over_lan = [&](const char* what) {
+        int ret = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
+        BOOST_LOG_TRIVIAL(info) << "print_job: " << what << " result = " << ret;
+        if (ret == BAMBU_NETWORK_ERR_PRINT_WR_REQUEST_PROJECT_ID_FAILED
+            || ret == BAMBU_NETWORK_ERR_PRINT_WR_GET_USER_UPLOAD_FAILED
+            || ret == BAMBU_NETWORK_ERR_PRINT_WR_GET_MY_SETTING_FAILED) {
+            BOOST_LOG_TRIVIAL(warning) << "print_job: LAN send failed before any transfer ("
+                                       << ret << "), retrying once";
+            ret = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
+            BOOST_LOG_TRIVIAL(info) << "print_job: " << what << " retry result = " << ret;
+        }
+        return ret;
+    };
+
     if (m_print_type == "from_sdcard_view") {
         BOOST_LOG_TRIVIAL(info) << "print_job: try to send with cloud, model is sdcard view";
         ctl.update_status(curr_percent, _u8L("Sending print job through cloud service"));
@@ -566,7 +588,7 @@ void PrintJob::process(Ctl &ctl)
                 BOOST_LOG_TRIVIAL(info) << "print_job: use ftp send print only";
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
                 is_try_lan_mode = true;
-                result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
+                result = send_over_lan("ftp_only");
                 if (result < 0) {
                     error_text = wxString::Format(_L("Access code:%s IP address:%s"), params.password, params.dev_ip);
                     // try to send with cloud
@@ -582,7 +604,7 @@ void PrintJob::process(Ctl &ctl)
                 // try to send local with record
                 BOOST_LOG_TRIVIAL(info) << "print_job: try to start local print with record";
                 ctl.update_status(curr_percent, _u8L("Sending print job over LAN"));
-                result = m_agent->start_local_print_with_record(params, update_fn, cancel_fn, wait_fn);
+                result = send_over_lan("local_with_record");
                 if (result == 0) {
                     params.comments = "";
                 }
