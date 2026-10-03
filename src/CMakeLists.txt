@@ -260,11 +260,15 @@ if (WIN32)
     if(MSVC)
         target_link_options(OrcaSlicer_app_gui PUBLIC "$<$<CONFIG:RELEASE>:/DEBUG>")
     endif()
-    target_compile_definitions(OrcaSlicer_app_gui PRIVATE "$<$<NOT:$<CONFIG:RelWithDebInfo>>:SLIC3R_WRAPPER_NOCONSOLE>")
+    # Always a GUI app. Upstream leaves RelWithDebInfo on the console subsystem as a
+    # development convenience, but RelWithDebInfo is the configuration this fork ships, and
+    # a terminal window sitting behind the app is not acceptable for that. Diagnostics go to
+    # %APPDATA%\OrcaSlicer\log instead, which is where they are actually readable.
+    target_compile_definitions(OrcaSlicer_app_gui PRIVATE SLIC3R_WRAPPER_NOCONSOLE)
     add_dependencies(OrcaSlicer_app_gui OrcaSlicer)
     set_target_properties(OrcaSlicer_app_gui PROPERTIES
         OUTPUT_NAME "orca-slicer"
-        WIN32_EXECUTABLE "$<NOT:$<CONFIG:RelWithDebInfo>>"
+        WIN32_EXECUTABLE TRUE
     )
     target_link_libraries(OrcaSlicer_app_gui PRIVATE boost_headeronly)
 endif ()

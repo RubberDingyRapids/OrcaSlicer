@@ -36,6 +36,9 @@
 #include "HMS.hpp"
 #include "PartSkipDialog.hpp"
 #include "DeviceErrorDialog.hpp"
+#include "ConsolePanel.hpp"
+#include "Widgets/BedPositionCtrl.hpp"
+#include <wx/spinctrl.h>
 
 class StepIndicator;
 
@@ -527,6 +530,9 @@ protected:
     wxStaticBitmap* m_bitmap_extruder_img;
 
     wgtDeviceNozzleRack* m_panel_nozzle_rack{ nullptr };
+    GUI::ConsolePanel*     m_console_mini{ nullptr };
+    GUI::BedPositionCtrl*  m_bed_position{ nullptr };
+    wxSpinCtrl*            m_bed_speed{ nullptr };
 
     wxPanel *       m_panel_separator_right;
     wxPanel *       m_panel_separotor_bottom;
@@ -612,6 +618,11 @@ public:
     wxBoxSizer *create_ams_group(wxWindow *parent);
     wxBoxSizer *create_settings_group(wxWindow *parent);
     wxBoxSizer* create_filament_group(wxWindow* parent);
+    wxBoxSizer* create_console_group(wxWindow* parent);
+    wxBoxSizer* create_bed_position_group(wxWindow* parent);
+    bool        m_bed_position_bound{ false };
+
+
 
 	void           expand_filament_loading(wxMouseEvent &e);
     void           show_ams_group(bool show = true);
@@ -772,6 +783,8 @@ protected:
     void update_basic_print_data(bool def = false);
     void update_model_info();
     void update_subtask(MachineObject* obj);
+    void update_bed_position(MachineObject* obj);
+    void send_bed_path(const std::vector<wxRealPoint>& path);
     void update_partskip_subtask(MachineObject *obj);
     void update_cloud_subtask(MachineObject *obj);
     void update_sdcard_subtask(MachineObject *obj);

@@ -195,8 +195,13 @@ void MonitorPanel::init_tabpanel()
     m_upgrade_panel = new UpgradePanel(m_tabpanel);
     m_tabpanel->AddPage(m_upgrade_panel, _L_CONTEXT(L_CONTEXT("Update", "Firmware"), "Firmware"), false);
 
+    m_settings_panel = new DeviceSettingsPanel(m_tabpanel);
+    m_tabpanel->AddPage(m_settings_panel, _L("Settings"), false);
+
     m_hms_panel = new HMSPanel(m_tabpanel);
     m_tabpanel->AddPage(m_hms_panel, _L("Assistant(HMS)"),    false);
+
+
 
     std::string network_ver = Slic3r::NetworkAgent::get_version();
     if (!network_ver.empty()) {
@@ -382,6 +387,8 @@ void MonitorPanel::update_all()
         m_upgrade_panel->update(obj);
     } else if (current_page == m_media_file_panel) {
         m_media_file_panel->UpdateByObj(obj);
+    } else if (current_page == m_settings_panel) {
+        m_settings_panel->update(obj);
     }
 
     if (current_page == m_hms_panel || (obj->GetHMS()->GetHMSItems().size() != m_hms_panel->temp_hms_list.size())) {
@@ -471,6 +478,7 @@ void MonitorPanel::show_status(int status)
     m_status_info_panel->show_status(status);
     m_hms_panel->show_status(status);
     m_upgrade_panel->show_status(status);
+    m_settings_panel->show_status(status);
 
     if ((status & (int)MonitorStatus::MONITOR_NO_PRINTER) != 0) {
         set_default();

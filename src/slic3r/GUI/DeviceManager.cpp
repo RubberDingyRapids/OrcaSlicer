@@ -25,6 +25,7 @@
 #include <wx/dir.h>
 #include "fast_float/fast_float.h"
 
+#include "DeviceCore/DevConsoleLog.h"
 #include "DeviceCore/DevFilaSystem.h"
 #include "DeviceCore/DevFilaSwitch.h"
 #include "DeviceCore/DevExtensionTool.h"
@@ -2729,17 +2730,27 @@ bool MachineObject::is_camera_busy_off()
 
 int MachineObject::publish_json(const json& json_item, int qos, int flag)
 {
+    /* Dump once, replacing bad bytes rather than throwing: some of the values that reach
+       here are user-entered names, and a bare dump() raises type_error.316 on a stray byte. */
+    const std::string payload = json_item.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+
+    /* Every outbound command passes through here, so this is the one place the console
+       needs to watch to show the traffic the UI itself generates. */
+    DevConsoleLog::instance().add(DevConsoleLog::Sent, get_dev_id(), payload);
+
     int rtn = 0;
     if (is_lan_mode_printer()) {
-        rtn = local_publish_json(json_item.dump(), qos, flag);
+        rtn = local_publish_json(payload, qos, flag);
     } else {
-        rtn = cloud_publish_json(json_item.dump(), qos, flag);
+        rtn = cloud_publish_json(payload, qos, flag);
     }
 
     if (rtn == 0) {
-        BOOST_LOG_TRIVIAL(info) << "publish_json: " << json_item.dump() << " code: " << rtn;
+        BOOST_LOG_TRIVIAL(info) << "publish_json: " << payload << " code: " << rtn;
     } else {
-        BOOST_LOG_TRIVIAL(error) << "publish_json: " << json_item.dump() << " code: " << rtn;
+        BOOST_LOG_TRIVIAL(error) << "publish_json: " << payload << " code: " << rtn;
+        DevConsoleLog::instance().add(DevConsoleLog::Note, get_dev_id(),
+                                      "publish failed, code " + std::to_string(rtn));
     }
 
     return rtn;

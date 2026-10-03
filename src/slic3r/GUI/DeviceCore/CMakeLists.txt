@@ -10,6 +10,8 @@ list(APPEND SLIC3R_GUI_SOURCES
     GUI/DeviceCore/DevConfig.cpp
     GUI/DeviceCore/DevConfigUtil.h
     GUI/DeviceCore/DevConfigUtil.cpp
+    GUI/DeviceCore/DevConsoleLog.h
+    GUI/DeviceCore/DevConsoleLog.cpp
     GUI/DeviceCore/DevCtrl.h
     GUI/DeviceCore/DevCtrl.cpp
     GUI/DeviceCore/DevDefs.h

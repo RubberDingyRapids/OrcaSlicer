@@ -1,4 +1,10 @@
 #include "StatusPanel.hpp"
+
+#include <algorithm>
+#include <string>
+
+#include "libslic3r/BoundingBox.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "I18N.hpp"
 #include "Widgets/Label.hpp"
 #include "Widgets/Button.hpp"
@@ -105,15 +111,41 @@ static wxImage fail_image;
 #define TASK_THUMBNAIL_SIZE (wxSize(FromDIP(120), FromDIP(120)))
 #define TASK_BUTTON_SIZE (wxSize(FromDIP(48), FromDIP(24)))
 #define TASK_BUTTON_SIZE2 (wxSize(-1, FromDIP(24)))
-#define Z_BUTTON_SIZE (wxSize(FromDIP(44), FromDIP(40)))
+/* The stock Control widgets are drawn a good deal larger than they need to be. Everything
+   in that section is scaled by CTRL_SCALE so the page is more compact and has room for
+   more readouts. Tunable without a rebuild: set "monitor_ctrl_scale" (percent, 50-100) in
+   OrcaSlicer.conf and restart. Text-bearing widgets have their own floor from the font, so
+   very small values simply stop making a difference. */
+static int ctrl_scale_pct()
+{
+    static const int pct = []() {
+        int v = 70;
+        if (auto* cfg = wxGetApp().app_config) {
+            const std::string s = cfg->get("monitor_ctrl_scale");
+            if (!s.empty()) {
+                try { v = std::stoi(s); } catch (...) { v = 70; }
+            }
+        }
+        return std::min(100, std::max(50, v));
+    }();
+    return pct;
+}
+#define CTRL_SCALE(n) ((int) ((n) * ctrl_scale_pct() / 100))
+
+#define Z_BUTTON_SIZE (wxSize(FromDIP(CTRL_SCALE(44)), FromDIP(CTRL_SCALE(40))))
+/* The left-hand readout column keeps its designed WIDTH: these widgets hold text whose
+   length is fixed by the data ("270 / 270"), and narrowing them truncates it. Only their
+   heights scale. The width freed up elsewhere comes out of the axis column, which is
+   whitespace around the jog pad. Likewise the misc buttons stack an icon above a label and
+   clip vertically well before 70%, so only their widths come down. */
 #define MISC_BUTTON_PANEL_SIZE (wxSize(FromDIP(136), FromDIP(55)))
 #define MISC_BUTTON_1FAN_SIZE (wxSize(FromDIP(132), FromDIP(51)))
 #define MISC_BUTTON_2FAN_SIZE (wxSize(FromDIP(66), FromDIP(51)))
 #define MISC_BUTTON_3FAN_SIZE (wxSize(FromDIP(44), FromDIP(51)))
-#define TEMP_CTRL_MIN_SIZE_ALIGN_ONE_ICON (wxSize(FromDIP(125), FromDIP(52)))
-#define TEMP_CTRL_MIN_SIZE_ALIGN_TWO_ICON (wxSize(FromDIP(145), FromDIP(48)))
-#define AXIS_MIN_SIZE (wxSize(FromDIP(258), FromDIP(258)))
-#define EXTRUDER_IMAGE_SIZE (wxSize(FromDIP(48), FromDIP(76)))
+#define TEMP_CTRL_MIN_SIZE_ALIGN_ONE_ICON (wxSize(FromDIP(125), FromDIP(CTRL_SCALE(52))))
+#define TEMP_CTRL_MIN_SIZE_ALIGN_TWO_ICON (wxSize(FromDIP(145), FromDIP(CTRL_SCALE(48))))
+#define AXIS_MIN_SIZE (wxSize(FromDIP(CTRL_SCALE(258)), FromDIP(CTRL_SCALE(258))))
+#define EXTRUDER_IMAGE_SIZE (wxSize(FromDIP(CTRL_SCALE(48)), FromDIP(CTRL_SCALE(76))))
 
 static void market_model_scoring_page(int design_id)
 {
@@ -1630,14 +1662,20 @@ wxBoxSizer *StatusBasePanel::create_machine_control_page(wxWindow *parent)
     m_ams_rack_switch->Hide();
     m_ams_rack_switch->Bind(wxCUSTOMEVT_SWITCH_POS, &StatusBasePanel::on_ams_rack_switch, this);
 
-    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(8));
+    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(8)));
     bSizer_control->Add(temp_axis_ctrl_sizer,   0, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(8));
-    bSizer_control->Add(m_ams_rack_switch,      0, wxALIGN_CENTRE|wxTOP, FromDIP(6));
-    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(6));
+    bSizer_control->Add(m_ams_rack_switch,      0, wxALIGN_CENTRE|wxTOP, FromDIP(CTRL_SCALE(6)));
+    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(6)));
     bSizer_control->Add(ams_rack_sizer,         0, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(8));
-    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(6));
+    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(6)));
     bSizer_control->Add(m_filament_load_sizer,  0, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(8));
-    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(4));
+    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(4)));
+    bSizer_control->Add(create_bed_position_group(parent), 0, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(8));
+    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(4)));
+    /* wxALIGN_CENTER, matching the boxes above: wxEXPAND would stretch this one to the full
+       panel width while they stay centred at 586, leaving it visibly offset to the left. */
+    bSizer_control->Add(create_console_group(parent), 1, wxALIGN_CENTER|wxLEFT|wxRIGHT, FromDIP(8));
+    bSizer_control->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(4)));
 
     bSizer_right->Add(bSizer_control, 1, wxEXPAND | wxALL, 0);
 
@@ -1677,7 +1715,10 @@ wxBoxSizer *StatusBasePanel::create_temp_axis_group(wxWindow *parent)
     axis_and_bed_control_sizer->Add(m_axis_sizer, 0, wxEXPAND | wxALL, 0);
     axis_and_bed_control_sizer->Add(bedPanel, 0, wxALIGN_CENTER, 0);
 
-    content_sizer->Add(m_temp_ctrl, 0, wxEXPAND | wxALL, FromDIP(5));
+    /* The box width stays at its designed 586: the AMS control below is pinned to 578 and
+       has to stay aligned with it. The readouts sit hard left and the extruder hard right,
+       exactly as before scaling; the slack goes to the axis column, which centres in it. */
+    content_sizer->Add(m_temp_ctrl, 0, wxEXPAND | wxALL, FromDIP(CTRL_SCALE(5)));
     content_sizer->Add(m_temp_temp_line, 0, wxEXPAND, 1);
     //content_sizer->Add(FromDIP(9), 0, 0, wxEXPAND, 1);
     /*content_sizer->Add(0, 0, 0, wxLEFT, FromDIP(18));
@@ -1693,11 +1734,11 @@ wxBoxSizer *StatusBasePanel::create_temp_axis_group(wxWindow *parent)
     m_temp_extruder_line->SetBackgroundColour(STATIC_BOX_LINE_COL);
 
     content_sizer->Add(m_temp_extruder_line, 0, wxEXPAND, 1);
-    content_sizer->Add(extruder_sizer, 0, wxEXPAND  | wxTOP | wxBOTTOM, FromDIP(12));
+    content_sizer->Add(extruder_sizer, 0, wxEXPAND  | wxTOP | wxBOTTOM, FromDIP(CTRL_SCALE(12)));
     content_sizer->Add(0, 0, 0, wxRIGHT, FromDIP(3));
 
     box->SetSizer(content_sizer);
-    sizer->Add(box, 0, wxEXPAND | wxALL, FromDIP(9));
+    sizer->Add(box, 0, wxEXPAND | wxALL, FromDIP(CTRL_SCALE(9)));
     return sizer;
 }
 
@@ -1896,6 +1937,8 @@ wxBoxSizer *StatusBasePanel::create_axis_control(wxWindow *parent)
     sizer->AddStretchSpacer();
     m_bpButton_xy = new AxisCtrlButton(parent, m_bitmap_axis_home);
     m_bpButton_xy->SetTextColor(StateColor(std::make_pair(DISCONNECT_TEXT_COL, (int) StateColor::Disabled), std::make_pair(NORMAL_TEXT_COL, (int) StateColor::Normal)));
+    /* Before SetMinSize: that recomputes the geometry, so the scale has to be in place. */
+    m_bpButton_xy->SetScale(ctrl_scale_pct() / 100.0);
     m_bpButton_xy->SetMinSize(AXIS_MIN_SIZE);
     m_bpButton_xy->SetSize(AXIS_MIN_SIZE);
     sizer->AddStretchSpacer();
@@ -1979,23 +2022,23 @@ wxBoxSizer *StatusBasePanel::create_extruder_control(wxWindow *parent)
     auto        panel = new wxPanel(parent,wxID_ANY);
 
     panel->SetBackgroundColour(*wxWHITE);
-    panel->SetSize(wxSize(FromDIP(143), -1));
-    panel->SetMinSize(wxSize(FromDIP(143), -1));
-    panel->SetMaxSize(wxSize(FromDIP(143), -1));
+    panel->SetSize(wxSize(FromDIP(CTRL_SCALE(143)), -1));
+    panel->SetMinSize(wxSize(FromDIP(CTRL_SCALE(143)), -1));
+    panel->SetMaxSize(wxSize(FromDIP(CTRL_SCALE(143)), -1));
 
     StateColor e_ctrl_bg(std::pair<wxColour, int>(BUTTON_PRESS_COL, StateColor::Pressed), std::pair<wxColour, int>(BUTTON_NORMAL1_COL, StateColor::Normal));
     StateColor e_ctrl_bd(std::pair<wxColour, int>(BUTTON_HOVER_COL, StateColor::Hovered), std::pair<wxColour, int>(BUTTON_NORMAL1_COL, StateColor::Normal));
 
-    m_nozzle_btn_panel = new SwitchBoard(panel, _L_CONTEXT("Left", "Nozzle position"), _L_CONTEXT("Right", "Nozzle position"), wxSize(FromDIP(126), FromDIP(26)));
+    m_nozzle_btn_panel = new SwitchBoard(panel, _L_CONTEXT("Left", "Nozzle position"), _L_CONTEXT("Right", "Nozzle position"), wxSize(FromDIP(CTRL_SCALE(126)), FromDIP(26)));
     m_nozzle_btn_panel->SetAutoDisableWhenSwitch();
 
     m_bpButton_e_10 = new Button(panel, "", "monitor_extruder_up", 0, 22); // Orca Dont scale icon size 
     m_bpButton_e_10->SetBorderWidth(2);
     m_bpButton_e_10->SetBackgroundColor(e_ctrl_bg);
     m_bpButton_e_10->SetBorderColor(e_ctrl_bd);
-    m_bpButton_e_10->SetMinSize(wxSize(FromDIP(40), FromDIP(40)));
+    m_bpButton_e_10->SetMinSize(wxSize(FromDIP(CTRL_SCALE(40)), FromDIP(CTRL_SCALE(40))));
 
-    m_extruder_book = new wxSimplebook(panel, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(45), FromDIP(112)), 0);
+    m_extruder_book = new wxSimplebook(panel, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(CTRL_SCALE(45)), FromDIP(CTRL_SCALE(112))), 0);
 
     m_extruder_book->InsertPage(0, new wxPanel(panel), "");
     for (int nozzle_num = 1; nozzle_num <= 2; nozzle_num++) {
@@ -2009,7 +2052,7 @@ wxBoxSizer *StatusBasePanel::create_extruder_control(wxWindow *parent)
     m_bpButton_e_down_10->SetBorderWidth(2);
     m_bpButton_e_down_10->SetBackgroundColor(e_ctrl_bg);
     m_bpButton_e_down_10->SetBorderColor(e_ctrl_bd);
-    m_bpButton_e_down_10->SetMinSize(wxSize(FromDIP(40), FromDIP(40)));
+    m_bpButton_e_down_10->SetMinSize(wxSize(FromDIP(CTRL_SCALE(40)), FromDIP(CTRL_SCALE(40))));
 
     m_extruder_switching_status = new ExtruderSwithingStatus(panel);
     m_extruder_switching_status->SetForegroundColour(TEXT_LIGHT_FONT_COL);
@@ -2018,17 +2061,17 @@ wxBoxSizer *StatusBasePanel::create_extruder_control(wxWindow *parent)
     m_extruder_label->SetFont(::Label::Body_13);
     m_extruder_label->SetForegroundColour(TEXT_LIGHT_FONT_COL);
 
-    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(15));
+    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(15)));
     bSizer_e_ctrl->Add(m_nozzle_btn_panel, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(15));
+    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(15)));
     bSizer_e_ctrl->Add(m_bpButton_e_10, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(7));
+    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(7)));
     bSizer_e_ctrl->Add(m_extruder_book, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(7));
+    bSizer_e_ctrl->Add(0, 0, 0, wxTOP, FromDIP(CTRL_SCALE(7)));
     bSizer_e_ctrl->Add(m_bpButton_e_down_10, 0, wxALIGN_CENTER_HORIZONTAL, 0);
     bSizer_e_ctrl->Add(0, 0, 1, wxEXPAND, 0);
     bSizer_e_ctrl->Add(m_extruder_switching_status, 0, wxALIGN_CENTER_HORIZONTAL, 0);
-    bSizer_e_ctrl->Add(m_extruder_label, 0, wxTOP | wxALIGN_CENTER_HORIZONTAL, FromDIP(10));
+    bSizer_e_ctrl->Add(m_extruder_label, 0, wxTOP | wxALIGN_CENTER_HORIZONTAL, FromDIP(CTRL_SCALE(10)));
 
     panel->SetSizer(bSizer_e_ctrl);
     panel->Layout();
@@ -2068,6 +2111,169 @@ wxBoxSizer *StatusBasePanel::create_ams_group(wxWindow *parent)
     m_ams_control_box->Layout();
     m_ams_control_box->Fit();
     sizer->Add(m_ams_control_box, 0, wxALIGN_CENTER_HORIZONTAL | wxALL, FromDIP(0));
+    return sizer;
+}
+
+/* Keeps the plate view in step with the printer, and is the only place that decides whether
+   clicking it is allowed. */
+void StatusPanel::update_bed_position(MachineObject* obj)
+{
+    if (m_bed_position == nullptr)
+        return;
+
+    /* Bed size comes from the selected printer preset - the printer itself never reports
+       its printable area. */
+    if (const Preset* preset = &wxGetApp().preset_bundle->printers.get_selected_preset()) {
+        if (const auto* area = preset->config.opt<ConfigOptionPoints>("printable_area")) {
+            BoundingBoxf bb;
+            for (const Vec2d& pt : area->values)
+                bb.merge(pt);
+            if (bb.defined)
+                m_bed_position->SetBedSize(bb.size().x(), bb.size().y());
+        }
+    }
+
+    wxString unavailable;
+    if (obj == nullptr || !obj->is_connected()) {
+        unavailable = _L("Not connected");
+    } else if (obj->is_in_printing()) {
+        /* Not just unwise - the head is being moved by the job, so any position we drew
+           would be a guess, and a click would fight the print. */
+        unavailable = _L("Unavailable while printing");
+    } else if (!obj->is_axis_at_home("X") || !obj->is_axis_at_home("Y")) {
+        unavailable = _L("Home the printer first");
+    }
+
+    m_bed_position->SetUnavailableReason(unavailable);
+    if (!unavailable.empty())
+        m_bed_position->SetPosition(std::nullopt);
+
+    if (!m_bed_position_bound) {
+        m_bed_position_bound = true;
+
+        m_bed_position->SetOnMove([this](double x, double y) {
+            std::vector<wxRealPoint> single{wxRealPoint(x, y)};
+            send_bed_path(single);
+            /* The printer never reports position, so this is the only record of where the
+               head went. Accurate exactly while we are the only one moving it. */
+            m_bed_position->SetPosition(wxRealPoint(x, y));
+        });
+
+        m_bed_position->SetOnPath([this](const std::vector<wxRealPoint>& path) { send_bed_path(path); });
+    }
+}
+
+/* One absolute move, or a whole drawn stroke, as a single G-code block.
+ *
+ * Sending it in one block matters: each publish is an MQTT round trip, so a stroke sent as
+ * one command per point would stutter as the planner drained between them. */
+void StatusPanel::send_bed_path(const std::vector<wxRealPoint>& path)
+{
+    MachineObject* o = this->obj;
+    if (o == nullptr || !o->is_connected() || o->is_in_printing() || path.empty())
+        return;
+    if (!o->is_axis_at_home("X") || !o->is_axis_at_home("Y"))
+        return;
+
+    const int feed = m_bed_speed != nullptr ? m_bed_speed->GetValue() : 6000;
+
+    /* Mirrors DevAxis::Ctrl_Axis: soft endstops are re-armed around the move and the
+       reference mode is pushed/popped, otherwise the firmware refuses or mis-applies it.
+       G90 because these are absolute destinations, not jogs. */
+    std::string cmd = "M211 S \nM211 X1 Y1 Z1\nM1002 push_ref_mode\nG90 \n";
+    for (const wxRealPoint& p : path) {
+        char line[64];
+        snprintf(line, sizeof(line), "G1 X%0.1f Y%0.1f F%d\n", p.x, p.y, feed);
+        cmd += line;
+    }
+    cmd += "M1002 pop_ref_mode\nM211 R\n";
+
+    o->publish_gcode(cmd);
+}
+
+/* Top-down plate view with click-to-move, under the jog controls. */
+wxBoxSizer* StatusBasePanel::create_bed_position_group(wxWindow* parent)
+{
+    auto sizer = new wxBoxSizer(wxVERTICAL);
+
+    auto box = new StaticBox(parent);
+    box->SetBackgroundColor(StateColor(std::pair<wxColour, int>(*wxWHITE, StateColor::Normal)));
+    box->SetBorderColor(StateColor(std::pair<wxColour, int>(STATUS_PANEL_BG, StateColor::Normal)));
+    box->SetCornerRadius(5);
+    box->SetMinSize(wxSize(FromDIP(586), FromDIP(430)));
+    box->SetMaxSize(wxSize(FromDIP(586), -1));
+    box->SetBackgroundColour(*wxWHITE);
+
+    auto box_sizer = new wxBoxSizer(wxVERTICAL);
+
+    auto head_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto title = new Label(box, _L("Move to position"));
+    title->SetForegroundColour(GROUP_TITLE_FONT_COL);
+    head_sizer->Add(title, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(10));
+    head_sizer->AddStretchSpacer();
+
+    auto speed_label = new Label(box, _L("Speed"));
+    speed_label->SetForegroundColour(GROUP_TITLE_FONT_COL);
+    head_sizer->Add(speed_label, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+
+    /* mm/min, which is what G1's F parameter takes - no conversion, nothing to get wrong. */
+    m_bed_speed = new wxSpinCtrl(box, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(90), -1),
+                                 wxSP_ARROW_KEYS, 300, 30000, 6000);
+    m_bed_speed->SetIncrement(500);
+    m_bed_speed->SetToolTip(_L("Feedrate in mm/min, used for clicks and drawn paths."));
+    head_sizer->Add(m_bed_speed, 0, wxALIGN_CENTER_VERTICAL, 0);
+
+    auto mm_label = new Label(box, _L("mm/min"));
+    mm_label->SetForegroundColour(GROUP_TITLE_FONT_COL);
+    head_sizer->Add(mm_label, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, FromDIP(6));
+
+    box_sizer->Add(head_sizer, 0, wxEXPAND | wxTOP, FromDIP(8));
+
+    auto hint = new Label(box, _L("Click to move. Hold and drag to draw a path for the head to follow."));
+    hint->SetForegroundColour(GROUP_TITLE_FONT_COL);
+    hint->SetFont(Label::Body_10);
+    box_sizer->Add(hint, 0, wxLEFT | wxTOP, FromDIP(10));
+
+    m_bed_position = new GUI::BedPositionCtrl(box);
+    m_bed_position->SetMinSize(wxSize(-1, FromDIP(360)));
+    box_sizer->Add(m_bed_position, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(2));
+
+    box->SetSizer(box_sizer);
+    box->Layout();
+
+    sizer->Add(box, 0, wxEXPAND, 0);
+    return sizer;
+}
+
+/* Compact console beneath the filament controls: the notable events only, one line each,
+   with a sender. The full traffic lives on its own top-level Console tab. */
+wxBoxSizer* StatusBasePanel::create_console_group(wxWindow* parent)
+{
+    auto sizer = new wxBoxSizer(wxVERTICAL);
+
+    auto box = new StaticBox(parent);
+    box->SetBackgroundColor(StateColor(std::pair<wxColour, int>(*wxWHITE, StateColor::Normal)));
+    box->SetBorderColor(StateColor(std::pair<wxColour, int>(STATUS_PANEL_BG, StateColor::Normal)));
+    box->SetCornerRadius(5);
+    box->SetMinSize(wxSize(FromDIP(586), FromDIP(230)));
+    box->SetMaxSize(wxSize(FromDIP(586), -1));
+    box->SetBackgroundColour(*wxWHITE);
+
+    auto box_sizer = new wxBoxSizer(wxVERTICAL);
+
+    auto title = new Label(box, _L("Console"));
+    title->SetForegroundColour(GROUP_TITLE_FONT_COL);
+    box_sizer->Add(title, 0, wxLEFT | wxTOP, FromDIP(10));
+
+    /* Inset, so the panel's own background does not paint over the StaticBox's rounded
+       border - which is what was clipping the box's edges. */
+    m_console_mini = new GUI::ConsolePanel(box, GUI::ConsolePanel::Mode::Compact);
+    box_sizer->Add(m_console_mini, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, FromDIP(2));
+
+    box->SetSizer(box_sizer);
+    box->Layout();
+
+    sizer->Add(box, 1, wxEXPAND, 0);
     return sizer;
 }
 
@@ -2813,6 +3019,9 @@ void StatusPanel::update(MachineObject *obj)
     update_subtask(obj);
     //m_project_task_panel->Thaw();
 
+    update_bed_position(obj);
+
+
 #if !BBL_RELEASE_TO_PUBLIC
     auto delay1 = std::chrono::duration_cast<std::chrono::milliseconds>(obj->last_utc_time - std::chrono::system_clock::now()).count();
     auto delay2 = std::chrono::duration_cast<std::chrono::milliseconds>(obj->last_push_time - std::chrono::system_clock::now()).count();
@@ -2828,6 +3037,16 @@ void StatusPanel::update(MachineObject *obj)
     else if (obj->HasRecentLanMessage()) m_mqtt_source->SetLabel("Lan");
     else m_mqtt_source->SetLabel("None");
     m_mqtt_source->Show();
+#endif
+
+#if !BBL_RELEASE_TO_PUBLIC
+    /* Both labels above are created short ("Timelapse", "MqttSource") and then given much
+       longer text here, and the delay figures change width on every refresh. Without
+       invalidating the cached best size the sizer keeps the original narrow allocation and
+       the text paints over the controls to its right. */
+    m_staticText_timelapse->InvalidateBestSize();
+    m_mqtt_source->InvalidateBestSize();
+    m_panel_monitoring_title->Layout();
 #endif
 
     //m_machine_ctrl_panel->Freeze();

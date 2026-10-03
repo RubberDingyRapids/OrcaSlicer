@@ -1317,6 +1317,13 @@ void MainFrame::init_tabpanel() {
     m_monitor->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(TAB_ID_MONITOR, m_monitor, _L("Device"), "tab_monitor_active");
 
+    /* Sits next to Device because that is what it is about, but deliberately not as a
+       sub-tab of it: the log is recorded app-wide and is most wanted exactly when the
+       Device page is misbehaving. */
+    m_console = new ConsolePanel(m_tabpanel, ConsolePanel::Mode::Full);
+    m_console->SetBackgroundColour(*wxWHITE);
+    m_tabpanel->AddPage(TAB_ID_CONSOLE, m_console, _L("Console"), "tab_console_active");
+
     m_printer_view = new PrinterWebView(m_tabpanel);
     Bind(EVT_LOAD_PRINTER_URL, [this](LoadPrinterViewEvent &evt) {
         wxString url = evt.GetString();

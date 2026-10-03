@@ -22,6 +22,7 @@
 #include "Auxiliary.hpp"
 #include "Project.hpp"
 #include "CalibrationPanel.hpp"
+#include "ConsolePanel.hpp"
 #include "UnsavedChangesDialog.hpp"
 #include "Widgets/SideButton.hpp"
 #include "Widgets/SideMenuPopup.hpp"
@@ -47,6 +48,7 @@
 // id of its own: sharing TAB_ID_MONITOR makes every name lookup resolve to whichever of the two
 // comes first, which silently defeats PluginPages' selection round-trip across a tab relayout.
 #define TAB_ID_MONITOR_WEB   "monitor_web"
+#define TAB_ID_CONSOLE       "console"
 #define TAB_ID_MULTI_DEVICE  "multi_device"
 #define TAB_ID_PROJECT       "project"
 #define TAB_ID_CALIBRATION   "calibration"
@@ -386,6 +388,7 @@ public:
     Plater*               m_plater { nullptr };
     //BBS: GUI refactor
     MonitorPanel*         m_monitor{ nullptr };
+    ConsolePanel*         m_console{ nullptr };
 
     //AuxiliaryPanel*       m_auxiliary{ nullptr };
     MultiMachinePage*     m_multi_machine{ nullptr };

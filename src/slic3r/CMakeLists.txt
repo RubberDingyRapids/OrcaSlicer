@@ -264,6 +264,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/HMS.hpp
     GUI/HMSPanel.cpp
     GUI/HMSPanel.hpp
+    GUI/Widgets/BedPositionCtrl.cpp
+    GUI/Widgets/BedPositionCtrl.hpp
+    GUI/ConsolePanel.cpp
+    GUI/ConsolePanel.hpp
+    GUI/DeviceSettingsPanel.cpp
+    GUI/DeviceSettingsPanel.hpp
     GUI/HttpServer.cpp
     GUI/HttpServer.hpp
     GUI/I18N.cpp

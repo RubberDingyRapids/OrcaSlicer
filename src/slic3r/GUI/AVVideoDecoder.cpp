@@ -6,10 +6,25 @@ extern "C"
 {
     #include <libavutil/avutil.h>
     #include <libavutil/imgutils.h>
+    #include <libavutil/log.h>
+}
+
+/* libav defaults to AV_LOG_INFO on stderr, and swscale emits "deprecated pixel format used"
+   for every single frame it scales - the camera stream is YUVJ420P, which is exactly what
+   that warning is about. At 30fps that is 30 lines a second for as long as live view is
+   open. Errors are still let through; only the per-frame chatter is dropped. */
+static void silence_libav_logging()
+{
+    static const bool done = []() {
+        av_log_set_level(AV_LOG_ERROR);
+        return true;
+    }();
+    (void) done;
 }
 
 AVVideoDecoder::AVVideoDecoder()
 {
+    silence_libav_logging();
     codec_ctx_ = avcodec_alloc_context3(nullptr);
 }
 

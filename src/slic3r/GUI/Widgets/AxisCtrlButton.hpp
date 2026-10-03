@@ -18,6 +18,7 @@ class AxisCtrlButton : public wxWindow
     double r_blank;
     double gap;
 	wxPoint center;
+    double  m_scale = 1.0;
 
     StateHandler    state_handler;
     StateColor      text_color;
@@ -60,6 +61,10 @@ public:
     void SetBitmap(ScalableBitmap &bmp);
 
     void Rescale();
+
+    /* Scales the drawn geometry; 1.0 is the stock size. The widget lays itself out from
+       fixed radii rather than from its min size, so the caller has to say so explicitly. */
+    void SetScale(double scale);
 
 private:
     void updateParams();

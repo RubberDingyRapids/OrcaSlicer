@@ -102,6 +102,7 @@
 #include "GeneratedConfig.hpp"
 
 #include "DeviceCore/DevManager.h"
+#include "DeviceCore/DevConsoleLog.h"
 
 #include "../Utils/PresetUpdater.hpp"
 #include "../Utils/PrintHost.hpp"
@@ -2306,6 +2307,9 @@ void GUI_App::init_networking_callbacks()
             if (is_closing()) {
                 return;
             }
+            /* Record before anything can filter or drop it: the console is a view on this
+               buffer, and the buffer is what a fault is read back from afterwards. */
+            DevConsoleLog::instance().add(DevConsoleLog::Push, dev_id, msg);
             CallAfter([this, dev_id, msg] {
                 if (is_closing())
                     return;
@@ -2355,6 +2359,7 @@ void GUI_App::init_networking_callbacks()
             if (is_closing()) {
                 return;
             }
+            DevConsoleLog::instance().add(DevConsoleLog::Push, dev_id, msg);
             CallAfter([this, dev_id, msg] {
                 if (is_closing())
                     return;

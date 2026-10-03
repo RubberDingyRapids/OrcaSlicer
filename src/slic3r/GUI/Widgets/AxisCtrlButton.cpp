@@ -61,11 +61,20 @@ AxisCtrlButton::AxisCtrlButton(wxWindow *parent, ScalableBitmap &icon, long stly
 }
 
 void AxisCtrlButton::updateParams() {
-    r_outer = OUTER_SIZE;
-    r_inner = INNER_SIZE;
-    r_home = HOME_SIZE;
-    r_blank = BLANK_SIZE;
-    gap = GAP_SIZE;
+    r_outer = OUTER_SIZE * m_scale;
+    r_inner = INNER_SIZE * m_scale;
+    r_home = HOME_SIZE * m_scale;
+    r_blank = BLANK_SIZE * m_scale;
+    gap = GAP_SIZE * m_scale;
+}
+
+void AxisCtrlButton::SetScale(double scale)
+{
+    if (scale <= 0.0)
+        return;
+    m_scale = scale;
+    updateParams();
+    Refresh();
 }
 
 void AxisCtrlButton::SetMinSize(const wxSize& size)
