@@ -1,4 +1,5 @@
 #include "libslic3r/libslic3r.h"
+#include "libslic3r/TriangleMesh.hpp"
 #include "libslic3r/Point.hpp"
 #include <string>
 #include <sstream>
@@ -2437,6 +2438,7 @@ void GLCanvas3D::_render_scene(const Camera& camera, const Size& cnv_size)
 #if ENABLE_RENDER_SELECTION_CENTER
     _render_selection_center();
 #endif // ENABLE_RENDER_SELECTION_CENTER
+    _render_orbit_pivot();
     // sidebar hints need to be rendered before the gizmos because the depth buffer
     // could be invalidated by the following gizmo render methods
     _render_selection_sidebar_hints();
@@ -4746,6 +4748,10 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
             // if dragging over blank area with left button or other button mapped to rotate, then rotate
             bool middle_or_right_button_used_as_rotate = (evt.MiddleIsDown() && button_mappings[MouseButton::Middle] == MouseAction::Rotation) ||
                                                          (evt.RightIsDown() && button_mappings[MouseButton::Right] == MouseAction::Rotation);         
+            // Orca: CAD-style orbit. Pick the pivot once, where the rotation drag starts.
+            if (!m_mouse.is_start_position_3D_defined())
+                m_cursor_orbit_pivot = get_cursor_orbit_pivot(pos.cast<double>());
+
             if ((any_gizmo_active || middle_or_right_button_used_as_rotate || m_hover_volume_idxs.empty()) &&
                 m_mouse.is_start_position_3D_defined()) {
                 Camera& camera = wxGetApp().plater()->get_camera();
@@ -4763,9 +4769,15 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                         camera.rotate_on_sphere(rot.x(), rot.y(), false);
                 }
                 else {
-                    if (wxGetApp().app_config->get_bool("use_free_camera"))
+                    if (wxGetApp().app_config->get_bool("use_free_camera")) {
                         // Virtual track ball (similar to the 3DConnexion mouse).
-                        camera.rotate_local_around_target(Vec3d(rot.y(), rot.x(), 0.));
+                        // Orca: CAD-style orbit pivots on the model surface picked under the cursor instead.
+                        if (m_cursor_orbit_pivot.has_value())
+                            camera.rotate_local_with_target(Vec3d(rot.y(), rot.x(), 0.), *m_cursor_orbit_pivot);
+                        else
+                            camera.rotate_local_around_target(Vec3d(rot.y(), rot.x(), 0.));
+                        m_orbit_pivot_shown = m_cursor_orbit_pivot.has_value() ? *m_cursor_orbit_pivot : camera.get_target();
+                    }
                     else {
                         // Forces camera right vector to be parallel to XY plane in case it has been misaligned using the 3D mouse free rotation.
                         // It is cheaper to call this function right away instead of testing wxGetApp().plater()->get_mouse3d_controller().connected(),
@@ -4785,12 +4797,15 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
                             camera.rotate_on_sphere_with_target(rot.x(), rot.y(), rotate_limit, m_rotation_center);
                         } else {
                             // Orca: Keep regular mouse orbit and perspective-pan fallback centered
-                            // on the same selection, active-plate, or scene reference.
-                            const std::optional<Vec3d> rotate_target = get_camera_orbit_target(ECameraNavigationType::Mouse);
+                            // on the same selection, active-plate, or scene reference, unless the
+                            // CAD-style orbit picked a pivot on the model under the cursor.
+                            const std::optional<Vec3d> rotate_target = m_cursor_orbit_pivot.has_value() ?
+                                m_cursor_orbit_pivot : get_camera_orbit_target(ECameraNavigationType::Mouse);
                             if (rotate_target.has_value())
                                 camera.rotate_on_sphere_with_target(rot.x(), rot.y(), rotate_limit, *rotate_target);
                             else
                                 camera.rotate_on_sphere(rot.x(), rot.y(), rotate_limit);
+                            m_orbit_pivot_shown = rotate_target.has_value() ? *rotate_target : camera.get_target();
                         }
                     }
                 }
@@ -4848,6 +4863,9 @@ void GLCanvas3D::on_mouse(wxMouseEvent& evt)
             (evt.MiddleUp() && button_mappings[MouseButton::Middle] == MouseAction::Rotation) ||
             (evt.RightUp() && button_mappings[MouseButton::Right] == MouseAction::Rotation)) {
             m_rotation_center(0) = m_rotation_center(1) = m_rotation_center(2) = 0.f;
+            m_cursor_orbit_pivot.reset();
+            m_orbit_pivot_shown.reset();
+            m_dirty = true;
         }
 
         if (m_layers_editing.state != LayersEditing::Unknown) {
@@ -11112,6 +11130,102 @@ std::optional<Vec3d> GLCanvas3D::get_camera_orbit_target(ECameraNavigationType n
 
     // Orca: Preserve the existing zero sentinel used by regular mouse orbit.
     return target.isZero() ? std::nullopt : std::make_optional(target);
+}
+
+std::optional<Vec3d> GLCanvas3D::get_cursor_orbit_pivot(const Vec2d& screen_position) const
+{
+    // Orca: CAD-style orbit (SolidWorks-like). Once the view is zoomed in closer than "fit the
+    // part(s)" by the configured ratio, rotate about the model surface under the cursor where the
+    // drag starts, or the nearest model surface around it. Otherwise keep the regular pivot.
+    if (m_canvas_type != ECanvasType::CanvasView3D)
+        return std::nullopt;
+
+    const AppConfig* app_config = wxGetApp().app_config;
+    if (app_config == nullptr || !app_config->get_bool("camera_orbit_under_cursor"))
+        return std::nullopt;
+
+    const BoundingBoxf3 box = m_selection.is_empty() ? volumes_bounding_box(true) : m_selection.get_bounding_box();
+    if (!box.defined || box.size().norm() < EPSILON)
+        return std::nullopt;
+
+    double min_zoom_ratio = 1.0;
+    try {
+        const std::string ratio_pref = app_config->get("camera_orbit_under_cursor_zoom");
+        if (!ratio_pref.empty())
+            min_zoom_ratio = std::stod(ratio_pref);
+    }
+    catch (const std::exception&) {
+        min_zoom_ratio = 1.0;
+    }
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const double fit_zoom = camera.zoom_to_box_factor(box);
+    if (fit_zoom <= 0.0 || camera.get_zoom() < min_zoom_ratio * fit_zoom)
+        return std::nullopt;
+
+    const ClippingPlane clipping_plane = get_raycaster_clipping_plane();
+    const Vec3d camera_position = camera.get_position();
+    const Vec3d camera_forward = camera.get_dir_forward();
+    const auto hit_model = [&](const Vec2d& p) -> std::optional<Vec3d> {
+        const SceneRaycaster::HitResult hit = m_scene_raycaster.hit(p, camera, &clipping_plane,
+            SceneRaycaster::EHitMode::VolumesOnly);
+        if (!hit.is_valid() || hit.type != SceneRaycaster::EType::Volume)
+            return std::nullopt;
+        const Vec3d position = hit.position.cast<double>();
+        if (!position.allFinite() || (position - camera_position).dot(camera_forward) <= EPSILON)
+            return std::nullopt;
+        return position;
+    };
+
+    if (const std::optional<Vec3d> under_cursor = hit_model(screen_position); under_cursor.has_value())
+        return under_cursor;
+
+    // Not over the model: probe rings of growing radius around the cursor and take the first
+    // surface found, which approximates the closest point on the model to the cursor.
+    static constexpr std::array<double, 6> ring_radii_px = { 8.0, 16.0, 28.0, 44.0, 64.0, 90.0 };
+    static constexpr int ring_samples = 16;
+    for (const double radius : ring_radii_px) {
+        for (int i = 0; i < ring_samples; ++i) {
+            const double angle = 2.0 * PI * static_cast<double>(i) / static_cast<double>(ring_samples);
+            const Vec2d probe = screen_position + radius * Vec2d(std::cos(angle), std::sin(angle));
+            if (const std::optional<Vec3d> hit = hit_model(probe); hit.has_value())
+                return hit;
+        }
+    }
+    return std::nullopt;
+}
+
+void GLCanvas3D::_render_orbit_pivot()
+{
+    // Orca: CAD-style orbit. A small marker at the point the view is rotating about, shown
+    // only while a rotation drag is in progress, so the pivot in use is visible at a glance.
+    if (!m_orbit_pivot_shown.has_value())
+        return;
+
+    GLShaderProgram* shader = wxGetApp().get_shader("flat");
+    if (shader == nullptr)
+        return;
+
+    if (!m_orbit_pivot_marker.is_initialized())
+        m_orbit_pivot_marker.init_from(its_make_sphere(1.0, PI / 12.0));
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    // Screen-constant size: about 5 px radius whatever the zoom.
+    const double radius = 5.0 * camera.get_inv_zoom();
+    const Transform3d view_model_matrix = camera.get_view_matrix() *
+        Geometry::assemble_transform(*m_orbit_pivot_shown, Vec3d::Zero(), Vec3d(radius, radius, radius));
+
+    shader->start_using();
+    shader->set_uniform("view_model_matrix", view_model_matrix);
+    shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+
+    // Drawn on top so it stays visible when the pivot is behind a surface.
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    m_orbit_pivot_marker.set_color(ColorRGBA(1.0f, 0.55f, 0.0f, 1.0f));
+    m_orbit_pivot_marker.render();
+    glsafe(::glEnable(GL_DEPTH_TEST));
+
+    shader->stop_using();
 }
 
 bool GLCanvas3D::is_bed_visible() const

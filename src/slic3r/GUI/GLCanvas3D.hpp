@@ -29,6 +29,7 @@
 #include "GLToolbar.hpp"
 #include "Event.hpp"
 #include "Selection.hpp"
+#include "GLModel.hpp"
 #include "Gizmos/GLGizmosManager.hpp"
 #include "GUI_ObjectLayers.hpp"
 #include "GLSelectionRectangle.hpp"
@@ -704,6 +705,11 @@ private:
     //BBS if explosion_ratio is changed, need to update volume bounding box
     mutable float m_explosion_ratio = 1.0;
     mutable Vec3d m_rotation_center{ 0.0, 0.0, 0.0};
+    // Orca: CAD-style orbit pivot, picked on the model under the cursor when a rotation drag starts.
+    std::optional<Vec3d> m_cursor_orbit_pivot;
+    // Orca: The pivot the current rotation drag is orbiting, drawn as a marker while dragging.
+    std::optional<Vec3d> m_orbit_pivot_shown;
+    GLModel m_orbit_pivot_marker;
     //BBS store camera view
     Camera camera;
 
@@ -1445,6 +1451,8 @@ private:
 #if ENABLE_RENDER_SELECTION_CENTER
     void _render_selection_center() { m_selection.render_center(m_gizmos.is_dragging()); }
 #endif // ENABLE_RENDER_SELECTION_CENTER
+    // Orca: CAD-style orbit. Marker at the pivot of the rotation drag in progress.
+    void _render_orbit_pivot();
     void _check_and_update_toolbar_icon_scale();
     void _render_overlays();
     void _render_overlay_toolbars();
@@ -1501,6 +1509,9 @@ private:
     std::optional<Vec3d> get_camera_orbit_target(ECameraNavigationType navigation_type) const;
     Vec3d get_camera_pan_anchor(Camera& camera, ECameraNavigationType navigation_type,
         const Vec2d& screen_position) const;
+    // Orca: CAD-style orbit. The model surface under (or nearest to) `screen_position` when the view
+    // is zoomed in past the part(s) by the configured ratio, else nullopt for the regular pivot.
+    std::optional<Vec3d> get_cursor_orbit_pivot(const Vec2d& screen_position) const;
 
     void _start_timer() { m_timer.Start(100, wxTIMER_CONTINUOUS); }
     void _stop_timer() { m_timer.Stop(); }
