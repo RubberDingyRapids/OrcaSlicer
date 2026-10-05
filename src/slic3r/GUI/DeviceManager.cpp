@@ -3084,6 +3084,10 @@ int MachineObject::parse_json(std::string tunnel, std::string payload, bool key_
         else
             last_utc_time = last_update_time;
 
+        // Orca: expose the merged document to plugins (orca.host.device_status / device_status_seq).
+        last_status_payload = j.dump();
+        ++status_seq;
+
 #if !BBL_RELEASE_TO_PUBLIC
         BOOST_LOG_TRIVIAL(info) << "parse_json: dev_id=" << dev_id << ", tunnel is=" << tunnel << ", merged playload=" << j.dump();
 #else

@@ -121,6 +121,11 @@ private:
     std::string dev_ip;
     std::string access_code;
 
+    // Orca: the merged status document from the last parse_json(), kept for plugins
+    // (orca.host.device_status), and a counter bumped once per push so they can poll cheaply.
+    std::string   last_status_payload;
+    std::uint64_t status_seq{0};
+
     // type, time stamp, delay
     std::vector<std::tuple<std::string, uint64_t, uint64_t>> message_delay;
 
@@ -204,6 +209,9 @@ public:
     void set_dev_ip(std::string ip) { dev_ip = ip;  }
 
     std::string get_dev_id() const { return dev_id; }
+    // Orca: for plugins, see last_status_payload/status_seq.
+    const std::string& get_last_status_payload() const { return last_status_payload; }
+    std::uint64_t      get_status_seq() const { return status_seq; }
     void set_dev_id(std::string val) { dev_id = val; }
 
     // Generate consistent dev_id from host address and optional port

@@ -669,6 +669,7 @@ set(SLIC3R_GUI_SOURCES
     plugin/host/PluginHost.hpp
     plugin/host/PluginHostBindings.hpp
     plugin/host/PluginHostApp.cpp
+    plugin/host/PluginHostDevices.cpp
     plugin/host/PluginHostGeometry.cpp
     plugin/host/PluginHostMesh.cpp
     plugin/host/PluginHostMesh.hpp
