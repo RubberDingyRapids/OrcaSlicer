@@ -287,6 +287,12 @@ void AppConfig::set_defaults()
     if (get("camera_orbit_mult").empty())
         set("camera_orbit_mult", "1.0");
 
+    // Orca: CAD-style orbit about the model point under the cursor once zoomed in past the part.
+    if (get("camera_orbit_under_cursor").empty())
+        set_bool("camera_orbit_under_cursor", true);
+    if (get("camera_orbit_under_cursor_zoom").empty())
+        set("camera_orbit_under_cursor_zoom", "1.0");
+
     if (get(SETTING_OPENGL_AA_SAMPLES).empty())
         set(SETTING_OPENGL_AA_SAMPLES, "4");
 
