@@ -397,6 +397,10 @@ void AppConfig::set_defaults()
     if (get("enable_multi_machine").empty())
         set_bool("enable_multi_machine", false);
 
+    // Orca: the Project tab can be hidden from Preferences > General > Features.
+    if (get("show_project_tab").empty())
+        set_bool("show_project_tab", true);
+
     if (get("drc_bits").empty())
         set("drc_bits", DRC_BITS_DEFAULT_STR);
 
