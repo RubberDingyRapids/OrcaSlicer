@@ -1926,7 +1926,7 @@ void PreferencesDialog::create_items()
     auto item_use_free_camera  = create_item_checkbox(_L("Use free camera"), _L("If enabled, use free camera. If not enabled, use constrained camera."), "use_free_camera");
     g_sizer->Add(item_use_free_camera);
 
-    auto item_orbit_under_cursor = create_item_checkbox(_L("Orbit around point under cursor"), _L("CAD-style orbit. Once the view is zoomed in closer than the part, rotation pivots on the model surface under the mouse pointer where the drag starts, or the nearest surface to it. Otherwise the view orbits the centre of the part as usual."), "camera_orbit_under_cursor");
+    auto item_orbit_under_cursor = create_item_checkbox(_L("Orbit around point under cursor"), _L("CAD-style orbit. Once the view is zoomed in closer than the part, rotation pivots on the model surface under the mouse pointer where the drag starts, or the nearest surface to it. In Preview it pivots on the visible toolpaths the same way. Otherwise the view orbits the centre of the part as usual."), "camera_orbit_under_cursor");
     g_sizer->Add(item_orbit_under_cursor);
 
     auto item_orbit_under_cursor_zoom = create_item_decimal_input(_L("Orbit around cursor from zoom ratio"), "x", _L("Zoom level, relative to fitting the part to the view, from which orbiting pivots on the point under the cursor. 1.0 = as soon as the part fills the view, 0 = always."), "camera_orbit_under_cursor_zoom", 0.0, 50.0, 2);

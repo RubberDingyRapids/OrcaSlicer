@@ -1644,7 +1644,11 @@ private:
         const Vec2d& screen_position) const;
     // Orca: CAD-style orbit. The model surface under (or nearest to) `screen_position` when the view
     // is zoomed in past the part(s) by the configured ratio, else nullopt for the regular pivot.
-    std::optional<Vec3d> get_cursor_orbit_pivot(const Vec2d& screen_position) const;
+    // Non-const: in Preview it reads the depth buffer, which needs this canvas's GL context current.
+    std::optional<Vec3d> get_cursor_orbit_pivot(const Vec2d& screen_position);
+    // Orca: CAD-style orbit in Preview. Toolpaths are not ray-castable meshes, so the point under
+    // (or nearest to) the cursor is read back from the depth buffer of the last rendered frame.
+    std::optional<Vec3d> _pick_toolpath_orbit_pivot(const Vec2d& screen_position, const BoundingBoxf3& paths_box);
 
     void _start_timer() { m_timer.Start(100, wxTIMER_CONTINUOUS); }
     void _stop_timer() { m_timer.Stop(); }

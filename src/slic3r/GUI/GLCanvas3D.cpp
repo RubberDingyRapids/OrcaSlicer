@@ -12209,19 +12209,22 @@ std::optional<Vec3d> GLCanvas3D::get_camera_orbit_target(ECameraNavigationType n
     return target.isZero() ? std::nullopt : std::make_optional(target);
 }
 
-std::optional<Vec3d> GLCanvas3D::get_cursor_orbit_pivot(const Vec2d& screen_position) const
+std::optional<Vec3d> GLCanvas3D::get_cursor_orbit_pivot(const Vec2d& screen_position)
 {
     // Orca: CAD-style orbit (SolidWorks-like). Once the view is zoomed in closer than "fit the
     // part(s)" by the configured ratio, rotate about the model surface under the cursor where the
     // drag starts, or the nearest model surface around it. Otherwise keep the regular pivot.
-    if (m_canvas_type != ECanvasType::CanvasView3D)
+    // In Preview the same applies to the toolpaths on show.
+    const bool preview = m_canvas_type == ECanvasType::CanvasPreview;
+    if (m_canvas_type != ECanvasType::CanvasView3D && !preview)
         return std::nullopt;
 
     const AppConfig* app_config = wxGetApp().app_config;
     if (app_config == nullptr || !app_config->get_bool("camera_orbit_under_cursor"))
         return std::nullopt;
 
-    const BoundingBoxf3 box = m_selection.is_empty() ? volumes_bounding_box(true) : m_selection.get_bounding_box();
+    const BoundingBoxf3 box = preview ? m_gcode_viewer.get_paths_bounding_box() :
+        (m_selection.is_empty() ? volumes_bounding_box(true) : m_selection.get_bounding_box());
     if (!box.defined || box.size().norm() < EPSILON)
         return std::nullopt;
 
@@ -12239,6 +12242,9 @@ std::optional<Vec3d> GLCanvas3D::get_cursor_orbit_pivot(const Vec2d& screen_posi
     const double fit_zoom = camera.zoom_to_box_factor(box);
     if (fit_zoom <= 0.0 || camera.get_zoom() < min_zoom_ratio * fit_zoom)
         return std::nullopt;
+
+    if (preview)
+        return _pick_toolpath_orbit_pivot(screen_position, box);
 
     const ClippingPlane clipping_plane = get_raycaster_clipping_plane();
     const Vec3d camera_position = camera.get_position();
@@ -12266,6 +12272,83 @@ std::optional<Vec3d> GLCanvas3D::get_cursor_orbit_pivot(const Vec2d& screen_posi
             const double angle = 2.0 * PI * static_cast<double>(i) / static_cast<double>(ring_samples);
             const Vec2d probe = screen_position + radius * Vec2d(std::cos(angle), std::sin(angle));
             if (const std::optional<Vec3d> hit = hit_model(probe); hit.has_value())
+                return hit;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<Vec3d> GLCanvas3D::_pick_toolpath_orbit_pivot(const Vec2d& screen_position, const BoundingBoxf3& paths_box)
+{
+    // Orca: CAD-style orbit in Preview. The canvas renders straight to the window, and the depth
+    // buffer is only cleared when the next frame starts, so it still holds the frame on screen:
+    // what is visible under the cursor, layer range and section view included. Read one block
+    // around the cursor and look for the nearest toolpath in it, as the View3D ring probe does.
+    if (!_set_current())
+        return std::nullopt;
+
+    const Camera& camera = wxGetApp().plater()->get_camera();
+    const Vec4i32 viewport(camera.get_viewport().data());
+    if (viewport[2] <= 0 || viewport[3] <= 0)
+        return std::nullopt;
+
+    static constexpr std::array<double, 6> ring_radii_px = { 8.0, 16.0, 28.0, 44.0, 64.0, 90.0 };
+    static constexpr int ring_samples = 16;
+    static constexpr int block_radius = 91;
+
+    // GL window coordinates (origin bottom left), relative to the viewport.
+    const int cx = static_cast<int>(std::lround(screen_position.x()));
+    const int cy = viewport[3] - 1 - static_cast<int>(std::lround(screen_position.y()));
+    const int x0 = std::max(0, cx - block_radius);
+    const int y0 = std::max(0, cy - block_radius);
+    const int x1 = std::min(viewport[2] - 1, cx + block_radius);
+    const int y1 = std::min(viewport[3] - 1, cy + block_radius);
+    if (x0 > x1 || y0 > y1)
+        return std::nullopt;
+    const int w = x1 - x0 + 1;
+    const int h = y1 - y0 + 1;
+
+    std::vector<float> depth(static_cast<size_t>(w) * static_cast<size_t>(h), 1.0f);
+    GLint prev_pack_alignment = 4;
+    glsafe(::glGetIntegerv(GL_PACK_ALIGNMENT, &prev_pack_alignment));
+    glsafe(::glPixelStorei(GL_PACK_ALIGNMENT, 1));
+    glsafe(::glReadPixels(viewport[0] + x0, viewport[1] + y0, w, h, GL_DEPTH_COMPONENT, GL_FLOAT, (void*)depth.data()));
+    glsafe(::glPixelStorei(GL_PACK_ALIGNMENT, prev_pack_alignment));
+
+    // Only accept points on the toolpaths: inside their box (plus a margin for the extrusion
+    // width) and above the plate, so the bed, its grid and the background are skipped.
+    BoundingBoxf3 accept_box = paths_box;
+    accept_box.min -= Vec3d(1.0, 1.0, 1.0);
+    accept_box.max += Vec3d(1.0, 1.0, 1.0);
+    static constexpr double min_height_above_plate = 0.02;
+
+    const Matrix4d view_matrix = camera.get_view_matrix().matrix();
+    const Matrix4d projection_matrix = camera.get_projection_matrix().matrix();
+    const Vec4d viewport_d = viewport.cast<double>();
+
+    const auto toolpath_at = [&](int px, int py) -> std::optional<Vec3d> {
+        if (px < x0 || px > x1 || py < y0 || py > y1)
+            return std::nullopt;
+        const float z = depth[static_cast<size_t>(py - y0) * static_cast<size_t>(w) + static_cast<size_t>(px - x0)];
+        if (!(z > 0.0f && z < 1.0f))
+            return std::nullopt;
+        Vec3d world;
+        igl::unproject(Vec3d(viewport[0] + px + 0.5, viewport[1] + py + 0.5, static_cast<double>(z)),
+                       view_matrix, projection_matrix, viewport_d, world);
+        if (!world.allFinite() || world.z() < min_height_above_plate || !accept_box.contains(world))
+            return std::nullopt;
+        return world;
+    };
+
+    if (const std::optional<Vec3d> under_cursor = toolpath_at(cx, cy); under_cursor.has_value())
+        return under_cursor;
+
+    for (const double radius : ring_radii_px) {
+        for (int i = 0; i < ring_samples; ++i) {
+            const double angle = 2.0 * PI * static_cast<double>(i) / static_cast<double>(ring_samples);
+            const int px = cx + static_cast<int>(std::lround(radius * std::cos(angle)));
+            const int py = cy + static_cast<int>(std::lround(radius * std::sin(angle)));
+            if (const std::optional<Vec3d> hit = toolpath_at(px, py); hit.has_value())
                 return hit;
         }
     }
